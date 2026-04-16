@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="hero.vcxproj" Id="b74ef20c-29e1-4ba4-b9ea-4408d8e55a4d" />
+</Solution>
