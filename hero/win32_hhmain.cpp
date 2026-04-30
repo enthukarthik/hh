@@ -13,6 +13,18 @@ GameWndProc(
 	LRESULT result = 0;
 
 	switch (uMsg) {
+		case WM_CREATE:
+		{
+			OutputDebugString(TEXT("WM_CREATE received in GameWndProc\n"));
+		}
+		break;
+
+		case WM_SIZE:
+		{
+			OutputDebugString(TEXT("WM_SIZE received in GameWndProc\n"));
+		}
+		break;
+
 		case WM_PAINT:
 		{
 			PAINTSTRUCT ps;
@@ -53,7 +65,7 @@ HWND CreateGameWindow(
 	wc.lpszClassName = TEXT("HandmadeHeroWindowClass");
 
 	if (RegisterClassEx(&wc) != 0) {
-		HWND gameWindow = CreateWindowEx(
+		return CreateWindowEx(
 			0,
 			wc.lpszClassName,
 			TEXT("Handmade Hero"),
@@ -61,9 +73,6 @@ HWND CreateGameWindow(
 			CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 			NULL, NULL, hInstance, NULL
 		);
-
-		return gameWindow;
-
 	} else {
 		MessageBox(NULL, TEXT("Failed to register window class!"), TEXT("Error"), MB_OK | MB_ICONERROR);
 		return NULL;
@@ -78,11 +87,11 @@ void GameLoop()
 		if (bRet == -1) {
 			MessageBox(NULL, TEXT("GetMessage failed with -1"), TEXT("Error"), MB_OK | MB_ICONERROR);
 			return;
-		} else if (bRet > 0) {
+		} else if (bRet == 0) { // WM_QUIT received
+			break;
+		} else {
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
-		} else {
-			break;
 		}
 	}
 }
