@@ -34,7 +34,15 @@ GameWndProc(
 			int y = ps.rcPaint.left;
 			int width = ps.rcPaint.right - ps.rcPaint.left;
 			int height = ps.rcPaint.bottom - ps.rcPaint.top;
-			PatBlt(hdc, x, y, width, height, WHITENESS);
+			static DWORD rasterOp = WHITENESS;
+
+			PatBlt(hdc, x, y, width, height, rasterOp);
+
+			if(rasterOp == WHITENESS) {
+				rasterOp = BLACKNESS;
+			} else {
+				rasterOp = WHITENESS;
+			}
 
 			EndPaint(hWnd, &ps);
 		}
