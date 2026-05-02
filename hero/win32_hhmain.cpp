@@ -2,46 +2,6 @@
 #include <tchar.h>
 
 #pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
-int CDECL
-FormatString(
-	TCHAR* szBuffer,
-	size_t bufferSize,
-	const TCHAR* szFormat,
-	...
-)
-{
-	va_list args;
-	va_start(args, szFormat);
-	int result = _vsntprintf_s(szBuffer, bufferSize, 1024, szFormat, args);
-	va_end(args);
-	return result;
-}
-
-void CDECL
-OutputDebugStringFormat(
-	const TCHAR* szFormat,
-	...
-)
-{
-	TCHAR szBuffer[1024];
-	if (FormatString(szBuffer, sizeof(szBuffer)/sizeof(TCHAR), szFormat) > 0) {
-		OutputDebugString(szBuffer);
-	}
-}
-
-int CDECL
-MessageBoxFormat(
-	const TCHAR* szFormat,
-	...
-)
-{
-	TCHAR szBuffer[1024];
-	if (FormatString(szBuffer, sizeof(szBuffer)/sizeof(TCHAR), szFormat) > 0) {
-		return MessageBox(NULL, szBuffer, TEXT("Game Information"), MB_OK | MB_ICONINFORMATION);
-	}
-	return 0;
-}
-
 
 LRESULT CALLBACK 
 GameWndProc(
@@ -54,15 +14,9 @@ GameWndProc(
 	LRESULT result = 0;
 
 	switch (uMsg) {
-		case WM_CREATE:
-		{
-			OutputDebugString(TEXT("WM_CREATE received in GameWndProc\n"));
-		}
-		break;
-
 		case WM_SIZE:
 		{
-			OutputDebugStringFormat(TEXT("WM_SIZE received in GameWndProc: width=%lu, height=%lu\n"), LOWORD(lParam), HIWORD(lParam));
+			OutputDebugString(TEXT("WM_SIZE received in GameWndProc\n"));
 		}
 		break;
 
@@ -71,13 +25,11 @@ GameWndProc(
 			PAINTSTRUCT ps;
 			HDC hdc = BeginPaint(hWnd, &ps);
 
-			int x = ps.rcPaint.top;
-			int y = ps.rcPaint.left;
+			int x = ps.rcPaint.left;
+			int y = ps.rcPaint.top;
 			int width = ps.rcPaint.right - ps.rcPaint.left;
 			int height = ps.rcPaint.bottom - ps.rcPaint.top;
 			static DWORD rasterOp = WHITENESS;
-			OutputDebugStringFormat(TEXT("In WM_PAINT. Invalid RECT: top=%lu, bottom=%lu, right=%lu, left=%lu\n"), ps.rcPaint.top, ps.rcPaint.bottom, ps.rcPaint.right, ps.rcPaint.left);
-			OutputDebugStringFormat(TEXT("In WM_PAINT. Painting coord: x=%lu, y=%lu, width=%lu, height=%lu\n"), x, y, width, height);
 			PatBlt(hdc, x, y, width, height, rasterOp);
 
 			if(rasterOp == WHITENESS) {
