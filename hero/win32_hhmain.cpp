@@ -1,7 +1,82 @@
 #include <windows.h>
-#include <tchar.h>
+#include <stdint.h>
+
+#define BYTES_PER_PIXEL 4
+#define MEMORYRGB(r, g, b) ((r) << 16 | (g) << 8 | (b))
 
 #pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
+
+BITMAPINFO BitmapInfo;
+void* BitmapMemory;
+
+void
+FillColorsInBitmapMemory(
+	int width, 
+	int height)
+{
+	uint32_t* pixel = (uint32_t*) BitmapMemory;
+	for(int row = 0; row < height; ++row) {
+		for(int col = 0; col < width; ++col) {
+			*(pixel++) = MEMORYRGB(0, 0, 255);
+		}
+	}
+}
+
+void
+CreateOrResizeBitmapMemory(
+	int width,
+	int height
+)
+{
+	if(BitmapMemory != NULL) {
+		VirtualFree(BitmapMemory, 0, MEM_RELEASE);
+	}
+
+	BitmapMemory = VirtualAlloc(
+		NULL,
+		width * height * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
+		MEM_COMMIT | MEM_RESERVE,
+		PAGE_READWRITE
+	);
+
+	FillColorsInBitmapMemory(width, height);
+}
+
+void
+BlitBitmapToWindow(
+	HDC hdc,
+	int width,
+	int height
+)
+{
+	BitmapInfo.bmiHeader.biSize = sizeof(BitmapInfo.bmiHeader);
+	BitmapInfo.bmiHeader.biWidth = width;
+	BitmapInfo.bmiHeader.biHeight = -height; // Negative height to indicate a top-down DIB
+	BitmapInfo.bmiHeader.biPlanes = 1;
+	BitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
+	BitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+
+	StretchDIBits(
+		hdc,
+		0, 0, width, height,
+		0, 0, width, height,
+		BitmapMemory,			// Bitmap memory that contains the color info
+		&BitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
+		DIB_RGB_COLORS,
+		SRCCOPY
+	);
+}
+
+void
+RenderBitmapToWindow(
+	HDC hdc,
+	int width,
+	int height
+)
+{
+	FillColorsInBitmapMemory(width, height);
+	BlitBitmapToWindow(hdc, width, height);
+}
 
 LRESULT CALLBACK 
 GameWndProc(
@@ -16,7 +91,9 @@ GameWndProc(
 	switch (uMsg) {
 		case WM_SIZE:
 		{
-			OutputDebugString(TEXT("WM_SIZE received in GameWndProc\n"));
+			int width = LOWORD(lParam);
+			int height = HIWORD(lParam);
+			CreateOrResizeBitmapMemory(width, height);
 		}
 		break;
 
@@ -25,18 +102,10 @@ GameWndProc(
 			PAINTSTRUCT ps;
 			HDC hdc = BeginPaint(hWnd, &ps);
 
-			int x = ps.rcPaint.left;
-			int y = ps.rcPaint.top;
 			int width = ps.rcPaint.right - ps.rcPaint.left;
 			int height = ps.rcPaint.bottom - ps.rcPaint.top;
-			static DWORD rasterOp = WHITENESS;
-			PatBlt(hdc, x, y, width, height, rasterOp);
 
-			if(rasterOp == WHITENESS) {
-				rasterOp = BLACKNESS;
-			} else {
-				rasterOp = WHITENESS;
-			}
+			RenderBitmapToWindow(hdc, width, height);
 
 			EndPaint(hWnd, &ps);
 		}
