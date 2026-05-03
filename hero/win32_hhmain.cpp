@@ -13,6 +13,23 @@ static int g_bitmapHeight;
 static bool g_gameRunning;
 
 static void
+InitializeBitmapInfo()
+{
+	// Describe the memory layout of the bitmap
+	g_bitmapInfo.bmiHeader.biSize = sizeof(g_bitmapInfo.bmiHeader);
+	g_bitmapInfo.bmiHeader.biPlanes = 1;
+	g_bitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
+	g_bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
+}
+
+static void
+InitializeGame()
+{
+	InitializeBitmapInfo();
+}
+
+static void
 GetClientWidthAndHeight(
 	HWND hWnd, 
 	int* width, 
@@ -31,7 +48,10 @@ FillColorsInBitmapMemory()
 	uint32_t* pixel = (uint32_t*) g_bitmapMemory;
 	for(int row = 0; row < g_bitmapHeight; ++row) {
 		for(int col = 0; col < g_bitmapWidth; ++col) {
-			*(pixel++) = MEMORYRGB(0, (uint8_t)row, (uint8_t)col);
+			uint8_t red = (uint8_t) col;
+			uint8_t green = (uint8_t) row;
+			uint8_t blue = (uint8_t) 0;
+			*(pixel++) = MEMORYRGB(red, green, blue);
 		}
 	}
 }
@@ -49,6 +69,8 @@ CreateNewBitmapMemory(
 
 	g_bitmapWidth = width;
 	g_bitmapHeight = height;
+	g_bitmapInfo.bmiHeader.biWidth = g_bitmapWidth;
+	g_bitmapInfo.bmiHeader.biHeight = -g_bitmapHeight; // Negative height to indicate a top-down DIB
 
 	g_bitmapMemory = VirtualAlloc(
 		NULL,
@@ -64,14 +86,6 @@ BlitBitmapToWindow(
 	HWND hWnd
 )
 {
-	// Describe the memory layout of the bitmap
-	g_bitmapInfo.bmiHeader.biSize = sizeof(g_bitmapInfo.bmiHeader);
-	g_bitmapInfo.bmiHeader.biWidth = g_bitmapWidth;
-	g_bitmapInfo.bmiHeader.biHeight = -g_bitmapHeight; // Negative height to indicate a top-down DIB
-	g_bitmapInfo.bmiHeader.biPlanes = 1;
-	g_bitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
-	g_bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
-	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
 
 	int windowWidth, windowHeight;
 	GetClientWidthAndHeight(hWnd, &windowWidth, &windowHeight);
@@ -197,6 +211,7 @@ WinMain(
 	HWND gameWindow = CreateGameWindow(hInstance);
 
 	if (gameWindow != NULL) {
+		InitializeGame();
 		GameLoop();
 	}
 
