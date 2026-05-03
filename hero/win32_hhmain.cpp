@@ -1,16 +1,18 @@
 #include <windows.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define BYTES_PER_PIXEL 4
 // 32 bit ARGB format, should have Alpha followed by RGB. In memory it'll be written as BGRA due to little endian architecture
 #define MEMORYRGB(r, g, b) ((r) << 16 | (g) << 8 | (b))
 
-BITMAPINFO BitmapInfo;
-void* BitmapMemory;
-int BitmapWidth;
-int BitmapHeight;
+static BITMAPINFO g_bitmapInfo;
+static void* g_bitmapMemory;
+static int g_bitmapWidth;
+static int g_bitmapHeight;
+static bool g_gameRunning;
 
-void
+static void
 GetClientWidthAndHeight(
 	HWND hWnd, 
 	int* width, 
@@ -23,52 +25,52 @@ GetClientWidthAndHeight(
 	*height = clientRect.bottom - clientRect.top;
 }
 
-void
+static void
 FillColorsInBitmapMemory()
 {
-	uint32_t* pixel = (uint32_t*) BitmapMemory;
-	for(int row = 0; row < BitmapHeight; ++row) {
-		for(int col = 0; col < BitmapWidth; ++col) {
-			*(pixel++) = MEMORYRGB(0, 0, 255);
+	uint32_t* pixel = (uint32_t*) g_bitmapMemory;
+	for(int row = 0; row < g_bitmapHeight; ++row) {
+		for(int col = 0; col < g_bitmapWidth; ++col) {
+			*(pixel++) = MEMORYRGB(0, (uint8_t)row, (uint8_t)col);
 		}
 	}
 }
 
-void
+static void
 CreateNewBitmapMemory(
 	int width,
 	int height
 )
 {
 	// Free the old bitmap memory if it exists
-	if(BitmapMemory != NULL) {
-		VirtualFree(BitmapMemory, 0, MEM_RELEASE);
+	if(g_bitmapMemory != NULL) {
+		VirtualFree(g_bitmapMemory, 0, MEM_RELEASE);
 	}
 
-	BitmapWidth = width;
-	BitmapHeight = height;
+	g_bitmapWidth = width;
+	g_bitmapHeight = height;
 
-	BitmapMemory = VirtualAlloc(
+	g_bitmapMemory = VirtualAlloc(
 		NULL,
-		BitmapWidth * BitmapHeight * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
+		g_bitmapWidth * g_bitmapHeight * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READWRITE
 	);
 }
 
-void
+static void
 BlitBitmapToWindow(
 	HDC hdc,
 	HWND hWnd
 )
 {
 	// Describe the memory layout of the bitmap
-	BitmapInfo.bmiHeader.biSize = sizeof(BitmapInfo.bmiHeader);
-	BitmapInfo.bmiHeader.biWidth = BitmapWidth;
-	BitmapInfo.bmiHeader.biHeight = -BitmapHeight; // Negative height to indicate a top-down DIB
-	BitmapInfo.bmiHeader.biPlanes = 1;
-	BitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
-	BitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+	g_bitmapInfo.bmiHeader.biSize = sizeof(g_bitmapInfo.bmiHeader);
+	g_bitmapInfo.bmiHeader.biWidth = g_bitmapWidth;
+	g_bitmapInfo.bmiHeader.biHeight = -g_bitmapHeight; // Negative height to indicate a top-down DIB
+	g_bitmapInfo.bmiHeader.biPlanes = 1;
+	g_bitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
+	g_bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
 	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
 
 	int windowWidth, windowHeight;
@@ -77,15 +79,15 @@ BlitBitmapToWindow(
 	StretchDIBits(
 		hdc,
 		0, 0, windowWidth, windowHeight,
-		0, 0, BitmapWidth, BitmapHeight,
-		BitmapMemory,			// Bitmap memory that contains the color info
-		&BitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
+		0, 0, g_bitmapWidth, g_bitmapHeight,
+		g_bitmapMemory,			// Bitmap memory that contains the color info
+		&g_bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
 		SRCCOPY
 	);
 }
 
-void
+static void
 RenderBitmapToWindow(
 	HWND hWnd
 )
