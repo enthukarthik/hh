@@ -86,7 +86,6 @@ BlitBitmapToWindow(
 	HWND hWnd
 )
 {
-
 	int windowWidth, windowHeight;
 	GetClientWidthAndHeight(hWnd, &windowWidth, &windowHeight);
 
@@ -186,6 +185,7 @@ void GameLoop()
 		while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
 			if(msg.message == WM_QUIT) {
 				g_gameRunning = false;
+				break;
 			}
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
