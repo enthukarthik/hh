@@ -4,7 +4,7 @@
 
 #define BYTES_PER_PIXEL 4
 // 32 bit ARGB format, should have Alpha followed by RGB. In memory it'll be written as BGRA due to little endian architecture
-#define MEMORYRGB(r, g, b) ((r) << 16 | (g) << 8 | (b))
+#define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
 
 static BITMAPINFO g_bitmapInfo;
 static void* g_bitmapMemory;
@@ -43,15 +43,18 @@ GetClientWidthAndHeight(
 }
 
 static void
-FillColorsInBitmapMemory()
+FillColorsInBitmapMemory(
+	int rowOffset,
+	int colOffset
+)
 {
 	uint32_t* pixel = (uint32_t*) g_bitmapMemory;
 	for(int row = 0; row < g_bitmapHeight; ++row) {
 		for(int col = 0; col < g_bitmapWidth; ++col) {
-			uint8_t red = (uint8_t) col;
-			uint8_t green = (uint8_t) row;
-			uint8_t blue = (uint8_t) 0;
-			*(pixel++) = MEMORYRGB(red, green, blue);
+			uint8_t red   = (uint8_t) (col + colOffset);
+			uint8_t green = (uint8_t) (row + rowOffset);
+			uint8_t blue  = (uint8_t) 0;
+			*(pixel++) = MEMRGB(red, green, blue);
 		}
 	}
 }
@@ -102,14 +105,28 @@ BlitBitmapToWindow(
 
 static void
 RenderBitmapToWindow(
-	HWND hWnd
+	HWND hWnd,
+	int rowOffset,
+	int colOffset
 )
 {
-	FillColorsInBitmapMemory();
+	FillColorsInBitmapMemory(rowOffset, colOffset);
 
 	HDC hDC = GetDC(hWnd);
 	BlitBitmapToWindow(hDC, hWnd);
 	ReleaseDC(hWnd, hDC);
+}
+
+static void
+RenderAndAnimateBitmapToWindow(
+	HWND hWnd,
+	int* rowOffset,
+	int* colOffset
+)
+{
+	RenderBitmapToWindow(hWnd, *rowOffset, *colOffset);
+	*rowOffset += 3;
+	*colOffset += 3;
 }
 
 LRESULT CALLBACK 
@@ -128,12 +145,6 @@ GameWndProc(
 			int width, height;
 			GetClientWidthAndHeight(hWnd, &width, &height);
 			CreateNewBitmapMemory(width, height);
-		}
-		break;
-
-		case WM_PAINT:
-		{
-			RenderBitmapToWindow(hWnd);
 		}
 		break;
 
@@ -176,9 +187,13 @@ HWND CreateGameWindow(
 	}
 }
 
-void GameLoop()
+void GameLoop(
+	HWND window
+)
 {
 	g_gameRunning = true;
+	int rowOffset = 0;
+	int colOffset = 0;
 
 	while(g_gameRunning) {
 		MSG msg;
@@ -191,7 +206,7 @@ void GameLoop()
 			DispatchMessage(&msg);
 		}
 
-		//Render game code here
+		RenderAndAnimateBitmapToWindow(window, &rowOffset, &colOffset);
 	}
 }
 
@@ -212,7 +227,7 @@ WinMain(
 
 	if (gameWindow != NULL) {
 		InitializeGame();
-		GameLoop();
+		GameLoop(gameWindow);
 	}
 
 	return 0;
