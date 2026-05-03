@@ -2,64 +2,82 @@
 #include <stdint.h>
 
 #define BYTES_PER_PIXEL 4
+// 32 bit ARGB format, should have Alpha followed by RGB. In memory it'll be written as BGRA due to little endian architecture
 #define MEMORYRGB(r, g, b) ((r) << 16 | (g) << 8 | (b))
-
-#pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
 
 BITMAPINFO BitmapInfo;
 void* BitmapMemory;
+int BitmapWidth;
+int BitmapHeight;
 
 void
-FillColorsInBitmapMemory(
-	int width, 
-	int height)
+GetClientWidthAndHeight(
+	HWND hWnd, 
+	int* width, 
+	int* height
+)
+{
+	RECT clientRect;
+	GetClientRect(hWnd, &clientRect);
+	*width = clientRect.right - clientRect.left;
+	*height = clientRect.bottom - clientRect.top;
+}
+
+void
+FillColorsInBitmapMemory()
 {
 	uint32_t* pixel = (uint32_t*) BitmapMemory;
-	for(int row = 0; row < height; ++row) {
-		for(int col = 0; col < width; ++col) {
+	for(int row = 0; row < BitmapHeight; ++row) {
+		for(int col = 0; col < BitmapWidth; ++col) {
 			*(pixel++) = MEMORYRGB(0, 0, 255);
 		}
 	}
 }
 
 void
-CreateOrResizeBitmapMemory(
+CreateNewBitmapMemory(
 	int width,
 	int height
 )
 {
+	// Free the old bitmap memory if it exists
 	if(BitmapMemory != NULL) {
 		VirtualFree(BitmapMemory, 0, MEM_RELEASE);
 	}
 
+	BitmapWidth = width;
+	BitmapHeight = height;
+
 	BitmapMemory = VirtualAlloc(
 		NULL,
-		width * height * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
+		BitmapWidth * BitmapHeight * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READWRITE
 	);
-
-	FillColorsInBitmapMemory(width, height);
 }
 
 void
 BlitBitmapToWindow(
 	HDC hdc,
-	int width,
-	int height
+	HWND hWnd
 )
 {
+	// Describe the memory layout of the bitmap
 	BitmapInfo.bmiHeader.biSize = sizeof(BitmapInfo.bmiHeader);
-	BitmapInfo.bmiHeader.biWidth = width;
-	BitmapInfo.bmiHeader.biHeight = -height; // Negative height to indicate a top-down DIB
+	BitmapInfo.bmiHeader.biWidth = BitmapWidth;
+	BitmapInfo.bmiHeader.biHeight = -BitmapHeight; // Negative height to indicate a top-down DIB
 	BitmapInfo.bmiHeader.biPlanes = 1;
 	BitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
 	BitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
+
+	int windowWidth, windowHeight;
+	GetClientWidthAndHeight(hWnd, &windowWidth, &windowHeight);
 
 	StretchDIBits(
 		hdc,
-		0, 0, width, height,
-		0, 0, width, height,
+		0, 0, windowWidth, windowHeight,
+		0, 0, BitmapWidth, BitmapHeight,
 		BitmapMemory,			// Bitmap memory that contains the color info
 		&BitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
@@ -69,13 +87,16 @@ BlitBitmapToWindow(
 
 void
 RenderBitmapToWindow(
-	HDC hdc,
-	int width,
-	int height
+	HWND hWnd
 )
 {
-	FillColorsInBitmapMemory(width, height);
-	BlitBitmapToWindow(hdc, width, height);
+	FillColorsInBitmapMemory();
+
+	HDC hDC = GetDC(hWnd);
+
+	BlitBitmapToWindow(hDC, hWnd);
+
+	ReleaseDC(hWnd, hDC);
 }
 
 LRESULT CALLBACK 
@@ -91,23 +112,15 @@ GameWndProc(
 	switch (uMsg) {
 		case WM_SIZE:
 		{
-			int width = LOWORD(lParam);
-			int height = HIWORD(lParam);
-			CreateOrResizeBitmapMemory(width, height);
+			int width, height;
+			GetClientWidthAndHeight(hWnd, &width, &height);
+			CreateNewBitmapMemory(width, height);
 		}
 		break;
 
 		case WM_PAINT:
 		{
-			PAINTSTRUCT ps;
-			HDC hdc = BeginPaint(hWnd, &ps);
-
-			int width = ps.rcPaint.right - ps.rcPaint.left;
-			int height = ps.rcPaint.bottom - ps.rcPaint.top;
-
-			RenderBitmapToWindow(hdc, width, height);
-
-			EndPaint(hWnd, &ps);
+			RenderBitmapToWindow(hWnd);
 		}
 		break;
 
@@ -166,6 +179,8 @@ void GameLoop()
 		}
 	}
 }
+
+#pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
 
 int APIENTRY
 WinMain(
