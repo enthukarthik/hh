@@ -95,9 +95,7 @@ RenderBitmapToWindow(
 	FillColorsInBitmapMemory();
 
 	HDC hDC = GetDC(hWnd);
-
 	BlitBitmapToWindow(hDC, hWnd);
-
 	ReleaseDC(hWnd, hDC);
 }
 
@@ -128,7 +126,7 @@ GameWndProc(
 
 		case WM_DESTROY:
 		{
-			PostQuitMessage(0);
+			g_gameRunning = false;
 		}
 		break;
 
@@ -167,18 +165,19 @@ HWND CreateGameWindow(
 
 void GameLoop()
 {
-	for (;;) {
+	g_gameRunning = true;
+
+	while(g_gameRunning) {
 		MSG msg;
-		BOOL bRet = GetMessage(&msg, NULL, 0, 0);
-		if (bRet == -1) {
-			MessageBox(NULL, TEXT("GetMessage failed with -1"), TEXT("Error"), MB_OK | MB_ICONERROR);
-			return;
-		} else if (bRet == 0) { // WM_QUIT received
-			break;
-		} else {
+		while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+			if(msg.message == WM_QUIT) {
+				g_gameRunning = false;
+			}
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 		}
+
+		//Render game code here
 	}
 }
 
