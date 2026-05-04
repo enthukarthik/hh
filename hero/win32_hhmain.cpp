@@ -72,8 +72,8 @@ FillColorsInBitmapMemory(
 static void
 CreateNewBitmapMemory(
 	BackBuffer* buffer,
-	int32_t width,
-	int32_t height
+	uint32_t width,
+	uint32_t height
 )
 {
 	// Free the old bitmap memory if it exists
@@ -84,7 +84,7 @@ CreateNewBitmapMemory(
 	buffer->bitmapWidth = width;
 	buffer->bitmapHeight = height;
 	buffer->bitmapInfo.bmiHeader.biWidth = width;
-	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t)height); // Negative height to indicate a top-down DIB
+	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t)height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type.
 
 	buffer->bitmapMemory = VirtualAlloc(
 		NULL,
@@ -148,6 +148,13 @@ GameWndProc(
 	LRESULT result = 0;
 
 	switch (uMsg) {
+		//case WM_PAINT:
+		//{
+		//	RenderBitmapToWindow(g_backBuffer, hWnd, false);
+		//	ValidateRect(hWnd, NULL); // Mark the entire client area as validated to prevent further WM_PAINT messages until the next invalidation
+		//}
+		//break;
+
 		case WM_DESTROY:
 		{
 			g_gameRunning = false;
@@ -202,7 +209,7 @@ void GameLoop(
 			DispatchMessage(&msg);
 		}
 
-		RenderBitmapToWindow(g_backBuffer, window, false);
+		RenderBitmapToWindow(g_backBuffer, window, true);
 	}
 }
 
