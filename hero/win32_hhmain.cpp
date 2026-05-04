@@ -32,13 +32,6 @@ InitializeBitmapInfo()
 	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
 }
 
-static void
-InitializeGame()
-{
-	g_gameRunning = true;
-	InitializeBitmapInfo();
-}
-
 static RectDimension
 GetClientWindowDimensions(
 	HWND hWnd
@@ -56,9 +49,11 @@ GetClientWindowDimensions(
 static void
 FillColorsInBitmapMemory(
 	BackBuffer buffer,
-	uint8_t colorOffset
+	bool animate
 )
 {
+	static uint8_t colorOffset = 0;
+
 	uint32_t* pixel = (uint32_t*) buffer.bitmapMemory;
 	for(uint32_t row = 0; row < buffer.bitmapHeight; ++row) {
 		for(uint32_t col = 0; col < buffer.bitmapWidth; ++col) {
@@ -67,6 +62,10 @@ FillColorsInBitmapMemory(
 			uint8_t blue  = (uint8_t) (row + col + colorOffset);
 			*(pixel++) = MEMRGB(red, green, blue);
 		}
+	}
+
+	if(animate) {
+		colorOffset += 3;
 	}
 }
 
@@ -96,6 +95,14 @@ CreateNewBitmapMemory(
 }
 
 static void
+InitializeGame()
+{
+	g_gameRunning = true;
+	InitializeBitmapInfo();
+	CreateNewBitmapMemory(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
+}
+
+static void
 BlitBitmapToWindow(
 	BackBuffer buffer,
 	HDC hdc,
@@ -119,26 +126,16 @@ static void
 RenderBitmapToWindow(
 	BackBuffer buffer,
 	HWND hWnd,
-	uint8_t colorOffset
+	bool animate
 )
 {
-	FillColorsInBitmapMemory(buffer, colorOffset);
+	FillColorsInBitmapMemory(buffer, animate);
 
 	HDC hDC = GetDC(hWnd);
 	BlitBitmapToWindow(buffer, hDC, hWnd);
 	ReleaseDC(hWnd, hDC);
 }
 
-static void
-RenderAndAnimateBitmapToWindow(
-	BackBuffer buffer,
-	HWND hWnd,
-	uint8_t* colorOffset
-)
-{
-	RenderBitmapToWindow(buffer, hWnd, *colorOffset);
-	*colorOffset += 3;
-}
 
 LRESULT CALLBACK 
 GameWndProc(
@@ -151,13 +148,6 @@ GameWndProc(
 	LRESULT result = 0;
 
 	switch (uMsg) {
-		case WM_SIZE:
-		{
-			RectDimension dim = GetClientWindowDimensions(hWnd);
-			CreateNewBitmapMemory(&g_backBuffer, dim.width, dim.height);
-		}
-		break;
-
 		case WM_DESTROY:
 		{
 			g_gameRunning = false;
@@ -201,8 +191,6 @@ void GameLoop(
 	HWND window
 )
 {
-	uint8_t colorOffset = 0;
-
 	while(g_gameRunning) {
 		MSG msg;
 		while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -214,7 +202,7 @@ void GameLoop(
 			DispatchMessage(&msg);
 		}
 
-		RenderAndAnimateBitmapToWindow(g_backBuffer, window, &colorOffset);
+		RenderBitmapToWindow(g_backBuffer, window, false);
 	}
 }
 
