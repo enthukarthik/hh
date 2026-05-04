@@ -148,13 +148,6 @@ GameWndProc(
 	LRESULT result = 0;
 
 	switch (uMsg) {
-		//case WM_PAINT:
-		//{
-		//	RenderBitmapToWindow(g_backBuffer, hWnd, false);
-		//	ValidateRect(hWnd, NULL); // Mark the entire client area as validated to prevent further WM_PAINT messages until the next invalidation
-		//}
-		//break;
-
 		case WM_DESTROY:
 		{
 			g_gameRunning = false;
