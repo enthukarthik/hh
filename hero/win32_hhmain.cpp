@@ -2,58 +2,69 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define BYTES_PER_PIXEL 4
-// 32 bit ARGB format, should have Alpha followed by RGB. In memory it'll be written as BGRA due to little endian architecture
+// 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
 
-static BITMAPINFO g_bitmapInfo;
-static void* g_bitmapMemory;
-static int g_bitmapWidth;
-static int g_bitmapHeight;
 static bool g_gameRunning;
+struct BackBuffer {
+	BITMAPINFO bitmapInfo;
+	void* bitmapMemory;
+	uint32_t bitmapWidth;
+	uint32_t bitmapHeight;
+	uint32_t bytesPerPixel;
+} g_backBuffer;
+
+struct RectDimension
+{
+	uint32_t width;
+	uint32_t height;
+};
 
 static void
 InitializeBitmapInfo()
 {
 	// Describe the memory layout of the bitmap
-	g_bitmapInfo.bmiHeader.biSize = sizeof(g_bitmapInfo.bmiHeader);
-	g_bitmapInfo.bmiHeader.biPlanes = 1;
-	g_bitmapInfo.bmiHeader.biBitCount = BYTES_PER_PIXEL * 8; // Assuming 32 bits per pixel
-	g_bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+	g_backBuffer.bytesPerPixel = 4; // Assuming 4 bytes per pixel (xRGB format)
+	g_backBuffer.bitmapInfo.bmiHeader.biSize = sizeof(g_backBuffer.bitmapInfo.bmiHeader);
+	g_backBuffer.bitmapInfo.bmiHeader.biPlanes = 1; // Must be set to 1
+	g_backBuffer.bitmapInfo.bmiHeader.biBitCount = (uint16_t)g_backBuffer.bytesPerPixel * 8; // Assuming 32 bits per pixel
+	g_backBuffer.bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
 	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
 }
 
 static void
 InitializeGame()
 {
+	g_gameRunning = true;
 	InitializeBitmapInfo();
 }
 
-static void
-GetClientWidthAndHeight(
-	HWND hWnd, 
-	int* width, 
-	int* height
+static RectDimension
+GetClientWindowDimensions(
+	HWND hWnd
 )
 {
 	RECT clientRect;
 	GetClientRect(hWnd, &clientRect);
-	*width = clientRect.right - clientRect.left;
-	*height = clientRect.bottom - clientRect.top;
+
+	RectDimension d;
+	d.width = clientRect.right - clientRect.left;
+	d.height = clientRect.bottom - clientRect.top;
+	return d;
 }
 
 static void
 FillColorsInBitmapMemory(
-	int rowOffset,
-	int colOffset
+	BackBuffer buffer,
+	uint8_t colorOffset
 )
 {
-	uint32_t* pixel = (uint32_t*) g_bitmapMemory;
-	for(int row = 0; row < g_bitmapHeight; ++row) {
-		for(int col = 0; col < g_bitmapWidth; ++col) {
-			uint8_t red   = (uint8_t) (col + colOffset);
-			uint8_t green = (uint8_t) (row + rowOffset);
-			uint8_t blue  = (uint8_t) 0;
+	uint32_t* pixel = (uint32_t*) buffer.bitmapMemory;
+	for(uint32_t row = 0; row < buffer.bitmapHeight; ++row) {
+		for(uint32_t col = 0; col < buffer.bitmapWidth; ++col) {
+			uint8_t red   = (uint8_t) (col + colorOffset);
+			uint8_t green = (uint8_t) (row + colorOffset);
+			uint8_t blue  = (uint8_t) (row + col + colorOffset);
 			*(pixel++) = MEMRGB(red, green, blue);
 		}
 	}
@@ -61,23 +72,24 @@ FillColorsInBitmapMemory(
 
 static void
 CreateNewBitmapMemory(
-	int width,
-	int height
+	BackBuffer* buffer,
+	int32_t width,
+	int32_t height
 )
 {
 	// Free the old bitmap memory if it exists
-	if(g_bitmapMemory != NULL) {
-		VirtualFree(g_bitmapMemory, 0, MEM_RELEASE);
+	if(buffer->bitmapMemory != NULL) {
+		VirtualFree(buffer->bitmapMemory, 0, MEM_RELEASE);
 	}
 
-	g_bitmapWidth = width;
-	g_bitmapHeight = height;
-	g_bitmapInfo.bmiHeader.biWidth = g_bitmapWidth;
-	g_bitmapInfo.bmiHeader.biHeight = -g_bitmapHeight; // Negative height to indicate a top-down DIB
+	buffer->bitmapWidth = width;
+	buffer->bitmapHeight = height;
+	buffer->bitmapInfo.bmiHeader.biWidth = width;
+	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t)height); // Negative height to indicate a top-down DIB
 
-	g_bitmapMemory = VirtualAlloc(
+	buffer->bitmapMemory = VirtualAlloc(
 		NULL,
-		g_bitmapWidth * g_bitmapHeight * BYTES_PER_PIXEL, // Assuming 4 bytes per pixel (32 bits per pixel)
+		(uint64_t)(buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel), // Assuming 4 bytes per pixel (32 bits per pixel)
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READWRITE
 	);
@@ -85,19 +97,19 @@ CreateNewBitmapMemory(
 
 static void
 BlitBitmapToWindow(
+	BackBuffer buffer,
 	HDC hdc,
 	HWND hWnd
 )
 {
-	int windowWidth, windowHeight;
-	GetClientWidthAndHeight(hWnd, &windowWidth, &windowHeight);
+	RectDimension window = GetClientWindowDimensions(hWnd);
 
 	StretchDIBits(
 		hdc,
-		0, 0, windowWidth, windowHeight,
-		0, 0, g_bitmapWidth, g_bitmapHeight,
-		g_bitmapMemory,			// Bitmap memory that contains the color info
-		&g_bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
+		0, 0, window.width, window.height,
+		0, 0, buffer.bitmapWidth, buffer.bitmapHeight,
+		buffer.bitmapMemory,			// Bitmap memory that contains the color info
+		&buffer.bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
 		SRCCOPY
 	);
@@ -105,28 +117,27 @@ BlitBitmapToWindow(
 
 static void
 RenderBitmapToWindow(
+	BackBuffer buffer,
 	HWND hWnd,
-	int rowOffset,
-	int colOffset
+	uint8_t colorOffset
 )
 {
-	FillColorsInBitmapMemory(rowOffset, colOffset);
+	FillColorsInBitmapMemory(buffer, colorOffset);
 
 	HDC hDC = GetDC(hWnd);
-	BlitBitmapToWindow(hDC, hWnd);
+	BlitBitmapToWindow(buffer, hDC, hWnd);
 	ReleaseDC(hWnd, hDC);
 }
 
 static void
 RenderAndAnimateBitmapToWindow(
+	BackBuffer buffer,
 	HWND hWnd,
-	int* rowOffset,
-	int* colOffset
+	uint8_t* colorOffset
 )
 {
-	RenderBitmapToWindow(hWnd, *rowOffset, *colOffset);
-	*rowOffset += 3;
-	*colOffset += 3;
+	RenderBitmapToWindow(buffer, hWnd, *colorOffset);
+	*colorOffset += 3;
 }
 
 LRESULT CALLBACK 
@@ -142,9 +153,8 @@ GameWndProc(
 	switch (uMsg) {
 		case WM_SIZE:
 		{
-			int width, height;
-			GetClientWidthAndHeight(hWnd, &width, &height);
-			CreateNewBitmapMemory(width, height);
+			RectDimension dim = GetClientWindowDimensions(hWnd);
+			CreateNewBitmapMemory(&g_backBuffer, dim.width, dim.height);
 		}
 		break;
 
@@ -191,9 +201,7 @@ void GameLoop(
 	HWND window
 )
 {
-	g_gameRunning = true;
-	int rowOffset = 0;
-	int colOffset = 0;
+	uint8_t colorOffset = 0;
 
 	while(g_gameRunning) {
 		MSG msg;
@@ -206,27 +214,28 @@ void GameLoop(
 			DispatchMessage(&msg);
 		}
 
-		RenderAndAnimateBitmapToWindow(window, &rowOffset, &colOffset);
+		RenderAndAnimateBitmapToWindow(g_backBuffer, window, &colorOffset);
 	}
 }
 
 #pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
 
-int APIENTRY
+int32_t APIENTRY
 WinMain(
 	HINSTANCE hInstance, 
 	HINSTANCE, 
 	PSTR szCmdLine, 
-	int iCmdShow
+	int32_t iCmdShow
 )
 {
 	UNREFERENCED_PARAMETER(szCmdLine);
 	UNREFERENCED_PARAMETER(iCmdShow);
 
+	InitializeGame();
+
 	HWND gameWindow = CreateGameWindow(hInstance);
 
 	if (gameWindow != NULL) {
-		InitializeGame();
 		GameLoop(gameWindow);
 	}
 
