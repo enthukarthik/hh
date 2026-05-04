@@ -5,20 +5,23 @@
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
 
-static bool g_gameRunning;
 struct BackBuffer {
 	BITMAPINFO bitmapInfo;
 	void* bitmapMemory;
 	uint32_t bitmapWidth;
 	uint32_t bitmapHeight;
 	uint32_t bytesPerPixel;
-} g_backBuffer;
+};
 
 struct RectDimension
 {
 	uint32_t width;
 	uint32_t height;
 };
+
+static bool g_gameRunning;
+static HDC g_deviceContext;
+static struct BackBuffer g_backBuffer;
 
 static void
 InitializeBitmapInfo()
@@ -70,7 +73,7 @@ FillColorsInBitmapMemory(
 }
 
 static void
-CreateNewBitmapMemory(
+AllocateNewBackBuffer(
 	BackBuffer* buffer,
 	uint32_t width,
 	uint32_t height
@@ -99,20 +102,19 @@ InitializeGame()
 {
 	g_gameRunning = true;
 	InitializeBitmapInfo();
-	CreateNewBitmapMemory(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
+	AllocateNewBackBuffer(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
 }
 
 static void
 BlitBitmapToWindow(
 	BackBuffer buffer,
-	HDC hdc,
 	HWND hWnd
 )
 {
 	RectDimension window = GetClientWindowDimensions(hWnd);
 
 	StretchDIBits(
-		hdc,
+		g_deviceContext,
 		0, 0, window.width, window.height,
 		0, 0, buffer.bitmapWidth, buffer.bitmapHeight,
 		buffer.bitmapMemory,			// Bitmap memory that contains the color info
@@ -130,10 +132,7 @@ RenderBitmapToWindow(
 )
 {
 	FillColorsInBitmapMemory(buffer, animate);
-
-	HDC hDC = GetDC(hWnd);
-	BlitBitmapToWindow(buffer, hDC, hWnd);
-	ReleaseDC(hWnd, hDC);
+	BlitBitmapToWindow(buffer, hWnd);
 }
 
 
@@ -191,6 +190,7 @@ void GameLoop(
 	HWND window
 )
 {
+	g_deviceContext = GetDC(window);
 	while(g_gameRunning) {
 		MSG msg;
 		while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -204,6 +204,7 @@ void GameLoop(
 
 		RenderBitmapToWindow(g_backBuffer, window, true);
 	}
+	ReleaseDC(window, g_deviceContext);
 }
 
 #pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
