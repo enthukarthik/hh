@@ -7,10 +7,10 @@
 
 struct BackBuffer {
 	BITMAPINFO bitmapInfo;
-	void* bitmapMemory;
-	uint32_t bitmapWidth;
-	uint32_t bitmapHeight;
-	uint32_t bytesPerPixel;
+	void*      bitmapMemory;
+	uint32_t   bitmapWidth;
+	uint32_t   bitmapHeight;
+	uint32_t   bytesPerPixel;
 };
 
 struct RectDimension
@@ -19,9 +19,17 @@ struct RectDimension
 	uint32_t height;
 };
 
-static bool g_gameRunning;
-static HDC g_deviceContext;
-static struct BackBuffer g_backBuffer;
+struct AnimationState
+{
+	bool	 animate;
+	uint32_t colorOffset;
+	uint32_t incrementValue;
+};
+
+static bool                  g_gameRunning;
+static HDC                   g_deviceContext;
+static struct BackBuffer     g_backBuffer;
+static struct AnimationState g_animationState;
 
 static void
 InitializeBitmapInfo()
@@ -33,6 +41,48 @@ InitializeBitmapInfo()
 	g_backBuffer.bitmapInfo.bmiHeader.biBitCount = (uint16_t)g_backBuffer.bytesPerPixel * 8; // Assuming 32 bits per pixel
 	g_backBuffer.bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
 	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
+}
+
+static void
+AllocateGameBackBuffer(
+	BackBuffer* buffer,
+	uint32_t width,
+	uint32_t height
+)
+{
+	// Free the old bitmap memory if it exists
+	if(buffer->bitmapMemory != NULL) {
+		VirtualFree(buffer->bitmapMemory, 0, MEM_RELEASE);
+	}
+
+	buffer->bitmapWidth = width;
+	buffer->bitmapHeight = height;
+	buffer->bitmapInfo.bmiHeader.biWidth = width;
+	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t) height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type to unsigned.
+
+	buffer->bitmapMemory = VirtualAlloc(
+		NULL,
+		(uint64_t) (buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel), // Assuming 4 bytes per pixel (32 bits per pixel)
+		MEM_COMMIT | MEM_RESERVE,
+		PAGE_READWRITE
+	);
+}
+
+static void
+SetAnimationState()
+{
+	g_animationState.animate = true;
+	g_animationState.colorOffset = 0;
+	g_animationState.incrementValue = 3;
+}
+
+static void
+InitializeGame()
+{
+	g_gameRunning = true;
+	InitializeBitmapInfo();
+	AllocateGameBackBuffer(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
+	SetAnimationState();
 }
 
 static RectDimension
@@ -51,62 +101,26 @@ GetClientWindowDimensions(
 
 static void
 FillColorsInBitmapMemory(
-	BackBuffer buffer,
-	bool animate
+	BackBuffer buffer
 )
 {
-	static uint8_t colorOffset = 0;
-
 	uint32_t* pixel = (uint32_t*) buffer.bitmapMemory;
 	for(uint32_t row = 0; row < buffer.bitmapHeight; ++row) {
 		for(uint32_t col = 0; col < buffer.bitmapWidth; ++col) {
-			uint8_t red   = (uint8_t) (col + colorOffset);
-			uint8_t green = (uint8_t) (row + colorOffset);
-			uint8_t blue  = (uint8_t) (row + col + colorOffset);
+			uint8_t red   = (uint8_t) (col + g_animationState.colorOffset);
+			uint8_t green = (uint8_t) (row + g_animationState.colorOffset);
+			uint8_t blue  = (uint8_t) (row + col + g_animationState.colorOffset);
 			*(pixel++) = MEMRGB(red, green, blue);
 		}
 	}
 
-	if(animate) {
-		colorOffset += 3;
+	if(g_animationState.animate) {
+		g_animationState.colorOffset += g_animationState.incrementValue;
 	}
 }
 
 static void
-AllocateNewBackBuffer(
-	BackBuffer* buffer,
-	uint32_t width,
-	uint32_t height
-)
-{
-	// Free the old bitmap memory if it exists
-	if(buffer->bitmapMemory != NULL) {
-		VirtualFree(buffer->bitmapMemory, 0, MEM_RELEASE);
-	}
-
-	buffer->bitmapWidth = width;
-	buffer->bitmapHeight = height;
-	buffer->bitmapInfo.bmiHeader.biWidth = width;
-	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t)height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type.
-
-	buffer->bitmapMemory = VirtualAlloc(
-		NULL,
-		(uint64_t)(buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel), // Assuming 4 bytes per pixel (32 bits per pixel)
-		MEM_COMMIT | MEM_RESERVE,
-		PAGE_READWRITE
-	);
-}
-
-static void
-InitializeGame()
-{
-	g_gameRunning = true;
-	InitializeBitmapInfo();
-	AllocateNewBackBuffer(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
-}
-
-static void
-BlitBitmapToWindow(
+CopyBackBufferToWindow(
 	BackBuffer buffer,
 	HWND hWnd
 )
@@ -127,14 +141,12 @@ BlitBitmapToWindow(
 static void
 RenderBitmapToWindow(
 	BackBuffer buffer,
-	HWND hWnd,
-	bool animate
+	HWND hWnd
 )
 {
-	FillColorsInBitmapMemory(buffer, animate);
-	BlitBitmapToWindow(buffer, hWnd);
+	FillColorsInBitmapMemory(buffer);
+	CopyBackBufferToWindow(buffer, hWnd);
 }
-
 
 LRESULT CALLBACK 
 GameWndProc(
@@ -202,7 +214,7 @@ void GameLoop(
 			DispatchMessage(&msg);
 		}
 
-		RenderBitmapToWindow(g_backBuffer, window, true);
+		RenderBitmapToWindow(g_backBuffer, window);
 	}
 	ReleaseDC(window, g_deviceContext);
 }
