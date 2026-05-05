@@ -1,6 +1,14 @@
 #include <windows.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <Xinput.h>
+#include <stdio.h>
+
+DWORD (*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
+DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return 0; }
+
+DWORD (*DynXInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
+DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return 0; }
 
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
@@ -22,14 +30,20 @@ struct RectDimension
 struct AnimationState
 {
 	bool	 animate;
-	uint32_t colorOffset;
-	uint32_t incrementValue;
+	uint32_t colorOffset[3];
+	uint32_t incrementValue[3];
+};
+
+struct GameState
+{
+	uint32_t handledXInputPacket;
 };
 
 static bool                  g_gameRunning;
 static HDC                   g_deviceContext;
 static struct BackBuffer     g_backBuffer;
 static struct AnimationState g_animationState;
+static struct GameState      g_gameState;
 
 static void
 InitializeBitmapInfo()
@@ -72,8 +86,32 @@ static void
 SetAnimationState()
 {
 	g_animationState.animate = true;
-	g_animationState.colorOffset = 0;
-	g_animationState.incrementValue = 3;
+	for(int i = 0; i < 3; ++i) {
+		g_animationState.colorOffset[i] = 0;
+		g_animationState.incrementValue[i] = 0;
+	}
+}
+
+static void
+LoadLibraries()
+{
+	HMODULE xinputLib = LoadLibrary(TEXT("xinput1_4.dll"));
+
+	if(!xinputLib) {
+		xinputLib = LoadLibrary(TEXT("xinput1_3.dll"));
+	}
+
+	if(!xinputLib) {
+		xinputLib = LoadLibrary(TEXT("xinput9_1_0.dll"));
+	}
+
+	if(xinputLib) {
+		DynXInputGetState = (DWORD (*)(DWORD, XINPUT_STATE*)) GetProcAddress(xinputLib, "XInputGetState");
+		DynXInputSetState = (DWORD (*)(DWORD, XINPUT_VIBRATION*)) GetProcAddress(xinputLib, "XInputSetState");
+	} else {
+		DynXInputGetState = &XInputGetStateStub;
+		DynXInputSetState = &XInputSetStateStub;
+	}
 }
 
 static void
@@ -83,6 +121,7 @@ InitializeGame()
 	InitializeBitmapInfo();
 	AllocateGameBackBuffer(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
 	SetAnimationState();
+	LoadLibraries();
 }
 
 static RectDimension
@@ -107,15 +146,17 @@ FillColorsInBitmapMemory(
 	uint32_t* pixel = (uint32_t*) buffer.bitmapMemory;
 	for(uint32_t row = 0; row < buffer.bitmapHeight; ++row) {
 		for(uint32_t col = 0; col < buffer.bitmapWidth; ++col) {
-			uint8_t red   = (uint8_t) (col + g_animationState.colorOffset);
-			uint8_t green = (uint8_t) (row + g_animationState.colorOffset);
-			uint8_t blue  = (uint8_t) (row + col + g_animationState.colorOffset);
+			uint8_t red   = (uint8_t) (col + g_animationState.colorOffset[0]);
+			uint8_t green = (uint8_t) (row + g_animationState.colorOffset[1]);
+			uint8_t blue  = (uint8_t) (0 + g_animationState.colorOffset[2]);
 			*(pixel++) = MEMRGB(red, green, blue);
 		}
 	}
 
 	if(g_animationState.animate) {
-		g_animationState.colorOffset += g_animationState.incrementValue;
+		for(int i = 0; i < 3; ++i) {
+			g_animationState.colorOffset[i] += g_animationState.incrementValue[i];
+		}
 	}
 }
 
@@ -147,6 +188,142 @@ RenderBitmapToWindow(
 	FillColorsInBitmapMemory(buffer);
 	CopyBackBufferToWindow(buffer, hWnd);
 }
+static void
+ToggleAnimation()
+{
+	g_animationState.animate = !g_animationState.animate;
+}
+
+static void
+ChangeAnimationIncrementValues(int32_t increment)
+{
+	for(int i = 0; i < 3; ++i) {
+		g_animationState.incrementValue[i] += increment;
+	}
+}
+
+static void
+SetAnimationIncrementValue(uint32_t channelIndex, int32_t increment)
+{
+	if(channelIndex < 3) {
+		g_animationState.incrementValue[channelIndex] = increment;
+	}
+}
+
+static void
+HandleXboxControllerInput()
+{
+	//Get Xbox Controller Input
+	for(uint32_t controllerIndex = 0; controllerIndex < XUSER_MAX_COUNT; ++controllerIndex) {
+		XINPUT_STATE controllerState;
+		ZeroMemory(&controllerState, sizeof(controllerState));
+		if(DynXInputGetState(controllerIndex, &controllerState) == ERROR_SUCCESS) {
+
+			if(controllerState.dwPacketNumber != g_gameState.handledXInputPacket) {
+				bool buttonA = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_A;
+				bool buttonB = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_B;
+				bool buttonX = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X;
+				bool buttonY = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y;
+
+				bool dpadUp = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
+				bool dpadDown = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
+				bool dpadLeft = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT;
+				bool dpadRight = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT;
+
+				bool leftShoulder = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER;
+				bool rightShoulder = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER;
+#if 0
+				int16_t leftThumbX = controllerState.Gamepad.sThumbLX;
+				int16_t leftThumbY = controllerState.Gamepad.sThumbLY;
+				int16_t rightThumbX = controllerState.Gamepad.sThumbRX;
+				int16_t rightThumbY = controllerState.Gamepad.sThumbRY;
+#endif
+				if(buttonA || buttonB || buttonX || buttonY || rightShoulder) {
+					ToggleAnimation();
+				}
+
+				if(dpadUp || dpadLeft || leftShoulder) {
+					ChangeAnimationIncrementValues(1); // Increment the animation value by 1
+				}
+
+				if(dpadDown || dpadRight) {
+					ChangeAnimationIncrementValues(-1); // Decrement the animation value by 1
+				}
+
+				g_gameState.handledXInputPacket = controllerState.dwPacketNumber; // Update the handled packet number to avoid processing the same input multiple times
+			}
+		}
+	}
+}
+
+static void
+HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
+{
+	//bool prevKeyState = (lParam & (1ul << 30)) == 0; // 0 if the key was previously up, 1 if it was previously down
+	bool isKeyPressed = (lParam & (1ul << 31)) == 0; // 31st bit is always 0 for key down messages
+
+	if(isKeyPressed) {
+		switch(wParam) {
+			case VK_UP:
+			case 'W':
+			{
+				SetAnimationIncrementValue(0, 0);
+				SetAnimationIncrementValue(1, 3);
+				SetAnimationIncrementValue(2, 0);
+			}
+			break;
+
+			case VK_DOWN:
+			case 'S':
+			{
+				SetAnimationIncrementValue(0, 0);
+				SetAnimationIncrementValue(1, -3);
+				SetAnimationIncrementValue(2, 0);
+			}
+			break;
+
+			case VK_LEFT:
+			case 'A':
+			{
+				SetAnimationIncrementValue(0, 3);
+				SetAnimationIncrementValue(1, 0);
+				SetAnimationIncrementValue(2, 0);
+			}
+			break;
+
+			case VK_RIGHT:
+			case 'D':
+			{
+				SetAnimationIncrementValue(0, -3);
+				SetAnimationIncrementValue(1, 0);
+				SetAnimationIncrementValue(2, 0);
+			}
+			break;
+
+			case VK_ESCAPE:
+			{
+				g_gameRunning = false;
+			}
+			break;
+
+			case VK_SPACE:
+			{
+				OutputDebugString(TEXT("Space key pressed! Toggling animation.\n"));
+				ToggleAnimation();
+			}
+			break;
+
+			default:
+				break;
+		}
+	}
+}
+
+static void
+GetUserInput()
+{
+	HandleXboxControllerInput();
+}
 
 LRESULT CALLBACK 
 GameWndProc(
@@ -162,6 +339,15 @@ GameWndProc(
 		case WM_DESTROY:
 		{
 			g_gameRunning = false;
+		}
+		break;
+
+		case WM_SYSKEYDOWN:
+		case WM_SYSKEYUP:
+		case WM_KEYDOWN:
+		case WM_KEYUP:
+		{
+			HandleKeyboardInput(wParam, lParam);
 		}
 		break;
 
@@ -181,13 +367,13 @@ HWND CreateGameWindow(
 	wc.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
 	wc.lpfnWndProc = GameWndProc;
 	wc.hInstance = hInstance;
-	wc.lpszClassName = TEXT("HandmadeHeroWindowClass");
+	wc.lpszClassName = TEXT("PeakHeroWindowClass");
 
 	if (RegisterClassEx(&wc) != 0) {
 		return CreateWindowEx(
 			0,
 			wc.lpszClassName,
-			TEXT("Handmade Hero"),
+			TEXT("Peak Hero"),
 			WS_OVERLAPPEDWINDOW | WS_VISIBLE,
 			CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
 			NULL, NULL, hInstance, NULL
@@ -214,6 +400,7 @@ void GameLoop(
 			DispatchMessage(&msg);
 		}
 
+		GetUserInput();
 		RenderBitmapToWindow(g_backBuffer, window);
 	}
 	ReleaseDC(window, g_deviceContext);
