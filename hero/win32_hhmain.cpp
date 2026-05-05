@@ -139,7 +139,7 @@ GetClientWindowDimensions(
 }
 
 static void
-FillColorsInBitmapMemory(
+FillColorsInBackBuffer(
 	BackBuffer* buffer
 )
 {
@@ -185,9 +185,10 @@ RenderBitmapToWindow(
 	HWND hWnd
 )
 {
-	FillColorsInBitmapMemory(buffer);
+	FillColorsInBackBuffer(buffer);
 	CopyBackBufferToWindow(buffer, hWnd);
 }
+
 static void
 ToggleAnimation()
 {
@@ -259,8 +260,8 @@ HandleXboxControllerInput()
 static void
 HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 {
-	//bool prevKeyState = (lParam & (1ul << 30)) == 0; // 0 if the key was previously up, 1 if it was previously down
-	bool isKeyPressed = (lParam & (1ul << 31)) == 0; // 31st bit is always 0 for key down messages
+	//bool prevKeyState = (lParam & (1ul << 30)) != 0; // 30th bit is 0 if the key was previously up, 1 if it was previously down. The variable is true if the key was previously down, false if it was previously up.
+	bool isKeyPressed = (lParam & (1ul << 31)) == 0; // 31st bit is always 0 for key down messages. The variable is true if the key is currently down, false if it is currently up.
 
 	if(isKeyPressed) {
 		switch(wParam) {
