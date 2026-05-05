@@ -140,12 +140,12 @@ GetClientWindowDimensions(
 
 static void
 FillColorsInBitmapMemory(
-	BackBuffer buffer
+	BackBuffer* buffer
 )
 {
-	uint32_t* pixel = (uint32_t*) buffer.bitmapMemory;
-	for(uint32_t row = 0; row < buffer.bitmapHeight; ++row) {
-		for(uint32_t col = 0; col < buffer.bitmapWidth; ++col) {
+	uint32_t* pixel = (uint32_t*) buffer->bitmapMemory;
+	for(uint32_t row = 0; row < buffer->bitmapHeight; ++row) {
+		for(uint32_t col = 0; col < buffer->bitmapWidth; ++col) {
 			uint8_t red   = (uint8_t) (col + g_animationState.colorOffset[0]);
 			uint8_t green = (uint8_t) (row + g_animationState.colorOffset[1]);
 			uint8_t blue  = (uint8_t) (0 + g_animationState.colorOffset[2]);
@@ -162,7 +162,7 @@ FillColorsInBitmapMemory(
 
 static void
 CopyBackBufferToWindow(
-	BackBuffer buffer,
+	BackBuffer* buffer,
 	HWND hWnd
 )
 {
@@ -171,9 +171,9 @@ CopyBackBufferToWindow(
 	StretchDIBits(
 		g_deviceContext,
 		0, 0, window.width, window.height,
-		0, 0, buffer.bitmapWidth, buffer.bitmapHeight,
-		buffer.bitmapMemory,			// Bitmap memory that contains the color info
-		&buffer.bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
+		0, 0, buffer->bitmapWidth, buffer->bitmapHeight,
+		buffer->bitmapMemory,			// Bitmap memory that contains the color info
+		&buffer->bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
 		SRCCOPY
 	);
@@ -181,7 +181,7 @@ CopyBackBufferToWindow(
 
 static void
 RenderBitmapToWindow(
-	BackBuffer buffer,
+	BackBuffer* buffer,
 	HWND hWnd
 )
 {
@@ -308,7 +308,6 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 
 			case VK_SPACE:
 			{
-				OutputDebugString(TEXT("Space key pressed! Toggling animation.\n"));
 				ToggleAnimation();
 			}
 			break;
@@ -401,7 +400,7 @@ void GameLoop(
 		}
 
 		GetUserInput();
-		RenderBitmapToWindow(g_backBuffer, window);
+		RenderBitmapToWindow(&g_backBuffer, window);
 	}
 	ReleaseDC(window, g_deviceContext);
 }
