@@ -5,10 +5,10 @@
 #include <stdio.h>
 
 DWORD (*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
-DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return 0; }
+DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECTED; }
 
 DWORD (*DynXInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
-DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return 0; }
+DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return ERROR_DEVICE_NOT_CONNECTED; }
 
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
@@ -304,6 +304,15 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 			case VK_ESCAPE:
 			{
 				g_gameRunning = false;
+			}
+			break;
+
+			case VK_F4:
+			{
+				bool altPressed = (lParam & (1ul << 29)) != 0; // 29th bit is 1 if the ALT key is pressed, 0 if it is not pressed. The variable is true if the ALT key is currently pressed, false if it is not currently pressed.
+				if(altPressed) {
+					g_gameRunning = false;
+				}
 			}
 			break;
 
