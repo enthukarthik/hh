@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <Xinput.h>
 #include <stdio.h>
+#include <dsound.h>
 
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
@@ -12,6 +13,9 @@ DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECT
 
 DWORD(*DynXInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
 DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return ERROR_DEVICE_NOT_CONNECTED; }
+
+typedef HRESULT WINAPI DynDirectSoundCreate(LPCGUID pcGuidDevice, LPDIRECTSOUND* ppDS, LPUNKNOWN pUnkOuter);
+static DynDirectSoundCreate* g_fnDirectSoundCreate;
 
 struct GameAssetBuffer {
 	void*      srcAssetBuffer;
@@ -149,16 +153,78 @@ LoadXInputLibrary()
 }
 
 static void
-LoadGameLibraries()
+LoadDirectSoundLibrary(HWND gameWindow, uint32_t bufferSize, uint32_t samplePerSec)
 {
-	LoadXInputLibrary();
+	// Step 1 : Load the dsound library
+	HMODULE dsoundLib = LoadLibrary(TEXT("dsound.dll")); // Load the DirectSound dll dynamically
+	if(dsoundLib) {
+		// Step 2 : Load the DirectSoundCreate proc address
+		g_fnDirectSoundCreate = (DynDirectSoundCreate *) GetProcAddress(dsoundLib, "DirectSoundCreate"); // Load the address of the DirectSoundCreate procedure
+
+		// Step 3 : Create the DirectSound object
+		LPDIRECTSOUND dsoundObj;
+		if(g_fnDirectSoundCreate && SUCCEEDED(g_fnDirectSoundCreate(NULL, &dsoundObj, 0))) { // DirectSoundCreate function populate the structure into the dsoundObj
+			WAVEFORMATEX waveFormat = { 0 };
+			waveFormat.wFormatTag = WAVE_FORMAT_PCM;
+			waveFormat.nChannels = 2; // 2 Channels. Left and Right
+			waveFormat.nSamplesPerSec = samplePerSec;
+			waveFormat.wBitsPerSample = 16; // 8 or 16
+			waveFormat.nBlockAlign = waveFormat.nChannels * waveFormat.wBitsPerSample / 8; // As per documentation
+			waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign; // As per documentation
+			waveFormat.cbSize = 0;
+
+			// Step 4 : SetCooperativeLevel to priority
+			if(SUCCEEDED(dsoundObj->SetCooperativeLevel(gameWindow, DSSCL_PRIORITY))) {
+				// Step 5 : Create Primary Buffer
+				DSBUFFERDESC dsBufferDescription = {0};
+				dsBufferDescription.dwSize = sizeof(DSBUFFERDESC);
+				dsBufferDescription.dwFlags = DSBCAPS_PRIMARYBUFFER;
+
+				LPDIRECTSOUNDBUFFER dsPrimaryBuffer;
+				if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &dsPrimaryBuffer, 0))) {
+
+					if(SUCCEEDED(dsPrimaryBuffer->SetFormat(&waveFormat))) {
+
+					}
+				}
+			}
+
+			// Step 6 : Create Secondary Buffer
+			DSBUFFERDESC dsBufferDescription = { 0 };
+			dsBufferDescription.dwSize = sizeof(DSBUFFERDESC);
+			dsBufferDescription.dwFlags = 0;
+			dsBufferDescription.dwBufferBytes = bufferSize;
+			dsBufferDescription.lpwfxFormat = &waveFormat;
+
+			LPDIRECTSOUNDBUFFER dsSecondaryBuffer;
+			if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &dsSecondaryBuffer, 0))) {
+				if(SUCCEEDED(dsSecondaryBuffer->SetFormat(&waveFormat))) {
+
+				}
+			}
+
+		}
+	}
 }
 
 static void
-InitializeGame()
+LoadGameLibraries(HWND gameWindow)
+{
+	LoadXInputLibrary();
+
+	uint32_t samplePerSec = 48000;
+	uint32_t sampleBufferLengthInSeconds = 2; // seconds
+	uint32_t sizeOfSingleSampleInBytes = sizeof(int16_t); // We've specified 16 bits for a single sample in WAVEFORMATEX structure
+	uint32_t totalSamples = samplePerSec * sampleBufferLengthInSeconds;
+	uint32_t totalSampleSize = totalSamples * sizeOfSingleSampleInBytes;
+	LoadDirectSoundLibrary(gameWindow, totalSampleSize, 48000); // 44100??
+}
+
+static void
+InitializeGame(HWND gameWindow)
 {
 	g_gameRunning = true;
-	LoadGameLibraries();
+	LoadGameLibraries(gameWindow);
 	LoadGameAssets();
 	SetAnimationState();
 }
@@ -489,7 +555,7 @@ WinMain(
 	HWND gameWindow = CreateGameWindow(hInstance);
 
 	if (gameWindow != NULL) {
-		InitializeGame();
+		InitializeGame(gameWindow);
 		GameLoop(gameWindow);
 	}
 
