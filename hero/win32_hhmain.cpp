@@ -4,21 +4,27 @@
 #include <Xinput.h>
 #include <stdio.h>
 
-DWORD (*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
-DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECTED; }
-
-DWORD (*DynXInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
-DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return ERROR_DEVICE_NOT_CONNECTED; }
-
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
 
-struct BackBuffer {
-	BITMAPINFO bitmapInfo;
-	void*      bitmapMemory;
-	uint32_t   bitmapWidth;
-	uint32_t   bitmapHeight;
-	uint32_t   bytesPerPixel;
+DWORD(*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
+DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECTED; }
+
+DWORD(*DynXInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
+DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return ERROR_DEVICE_NOT_CONNECTED; }
+
+struct GameAssetBuffer {
+	void*      srcAssetBuffer;
+	uint32_t   srcBitmapWidth;
+	uint32_t   srcBitmapHeight;
+	uint32_t   srcBytesPerPixel;
+	uint32_t   srcPitch;
+
+	BITMAPINFO destBitmapInfo;
+	void*      destBackBuffer;
+	uint32_t   destBitmapWidth;
+	uint32_t   destBitmapHeight;
+	uint32_t   destBytesPerPixel;
 };
 
 struct RectDimension
@@ -39,47 +45,77 @@ struct GameState
 	uint32_t handledXInputPacket;
 };
 
-static bool                  g_gameRunning;
-static HDC                   g_deviceContext;
-static struct BackBuffer     g_backBuffer;
-static struct AnimationState g_animationState;
-static struct GameState      g_gameState;
+static bool                   g_gameRunning;
+static HDC                    g_deviceContext;
+static struct GameAssetBuffer g_backBuffer;
+static struct AnimationState  g_animationState;
+static struct GameState       g_gameState;
 
 static void
 InitializeBitmapInfo()
 {
-	// Describe the memory layout of the bitmap
-	g_backBuffer.bytesPerPixel = 4; // Assuming 4 bytes per pixel (xRGB format)
-	g_backBuffer.bitmapInfo.bmiHeader.biSize = sizeof(g_backBuffer.bitmapInfo.bmiHeader);
-	g_backBuffer.bitmapInfo.bmiHeader.biPlanes = 1; // Must be set to 1
-	g_backBuffer.bitmapInfo.bmiHeader.biBitCount = (uint16_t)g_backBuffer.bytesPerPixel * 8; // Assuming 32 bits per pixel
-	g_backBuffer.bitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
-	// Other fields of BitmapInfoHeader can be left as zero for a simple uncompressed bitmap
+	g_backBuffer.srcBytesPerPixel = 3; // usual bmp file allows 24-bit bmp data
+
+	g_backBuffer.destBytesPerPixel = 4;
+	g_backBuffer.destBitmapInfo.bmiHeader.biSize = sizeof(g_backBuffer.destBitmapInfo.bmiHeader);
+	g_backBuffer.destBitmapInfo.bmiHeader.biPlanes = 1; // Must be set to 1
+	g_backBuffer.destBitmapInfo.bmiHeader.biBitCount = (uint16_t) g_backBuffer.destBytesPerPixel * 8;
+	g_backBuffer.destBitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+
 }
 
 static void
 AllocateGameBackBuffer(
-	BackBuffer* buffer,
+	GameAssetBuffer* buffer,
 	uint32_t width,
-	uint32_t height
+	uint32_t height,
+	bool topDownDIB
 )
 {
 	// Free the old bitmap memory if it exists
-	if(buffer->bitmapMemory != NULL) {
-		VirtualFree(buffer->bitmapMemory, 0, MEM_RELEASE);
+	if(buffer->destBackBuffer != NULL) {
+		VirtualFree(buffer->destBackBuffer, 0, MEM_RELEASE);
 	}
 
-	buffer->bitmapWidth = width;
-	buffer->bitmapHeight = height;
-	buffer->bitmapInfo.bmiHeader.biWidth = width;
-	buffer->bitmapInfo.bmiHeader.biHeight = -((int32_t) height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type to unsigned.
+	buffer->destBitmapWidth = width;
+	buffer->destBitmapHeight = height;
+	buffer->destBitmapInfo.bmiHeader.biWidth = width;
+	if(topDownDIB) {
+		buffer->destBitmapInfo.bmiHeader.biHeight = -((int32_t) height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type to unsigned.
+	} else {
+		buffer->destBitmapInfo.bmiHeader.biHeight = height;
+	}
 
-	buffer->bitmapMemory = VirtualAlloc(
+
+	buffer->destBackBuffer = VirtualAlloc(
 		NULL,
-		(uint64_t) (buffer->bitmapWidth * buffer->bitmapHeight * buffer->bytesPerPixel), // Assuming 4 bytes per pixel (32 bits per pixel)
+		(uint64_t) (buffer->destBitmapWidth * buffer->destBitmapHeight * buffer->destBytesPerPixel),
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READWRITE
 	);
+}
+
+static void
+LoadGameAssets()
+{
+	HANDLE p = LoadImageA(NULL, "AP.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	BITMAP file;
+	if(p) {
+		GetObject(p, sizeof(BITMAP), &file);
+
+		// Describe the memory layout of the bitmap
+		InitializeBitmapInfo();
+		g_backBuffer.srcAssetBuffer = file.bmBits;
+		g_backBuffer.srcPitch = file.bmWidthBytes;
+		g_backBuffer.srcBitmapWidth = file.bmWidth;
+		g_backBuffer.srcBitmapHeight = file.bmHeight;
+
+		AllocateGameBackBuffer(&g_backBuffer, file.bmWidth, file.bmHeight, false);
+
+	} else {
+		InitializeBitmapInfo();
+		AllocateGameBackBuffer(&g_backBuffer, 1920, 1080, true); // Default back buffer size
+	}
 }
 
 static void
@@ -93,18 +129,16 @@ SetAnimationState()
 }
 
 static void
-LoadLibraries()
+LoadXInputLibrary()
 {
+	// Load XInput library and get the addresses of the XInput functions
 	HMODULE xinputLib = LoadLibrary(TEXT("xinput1_4.dll"));
-
 	if(!xinputLib) {
 		xinputLib = LoadLibrary(TEXT("xinput1_3.dll"));
 	}
-
 	if(!xinputLib) {
 		xinputLib = LoadLibrary(TEXT("xinput9_1_0.dll"));
 	}
-
 	if(xinputLib) {
 		DynXInputGetState = (DWORD (*)(DWORD, XINPUT_STATE*)) GetProcAddress(xinputLib, "XInputGetState");
 		DynXInputSetState = (DWORD (*)(DWORD, XINPUT_VIBRATION*)) GetProcAddress(xinputLib, "XInputSetState");
@@ -115,13 +149,18 @@ LoadLibraries()
 }
 
 static void
+LoadGameLibraries()
+{
+	LoadXInputLibrary();
+}
+
+static void
 InitializeGame()
 {
 	g_gameRunning = true;
-	InitializeBitmapInfo();
-	AllocateGameBackBuffer(&g_backBuffer, 1920, 1080); // Initial size of the back buffer bitmap memory
+	LoadGameLibraries();
+	LoadGameAssets();
 	SetAnimationState();
-	LoadLibraries();
 }
 
 static RectDimension
@@ -140,16 +179,35 @@ GetClientWindowDimensions(
 
 static void
 FillColorsInBackBuffer(
-	BackBuffer* buffer
+	GameAssetBuffer* buffer
 )
 {
-	uint32_t* pixel = (uint32_t*) buffer->bitmapMemory;
-	for(uint32_t row = 0; row < buffer->bitmapHeight; ++row) {
-		for(uint32_t col = 0; col < buffer->bitmapWidth; ++col) {
-			uint8_t red   = (uint8_t) (col + g_animationState.colorOffset[0]);
-			uint8_t green = (uint8_t) (row + g_animationState.colorOffset[1]);
-			uint8_t blue  = (uint8_t) (0 + g_animationState.colorOffset[2]);
-			*(pixel++) = MEMRGB(red, green, blue);
+	if(buffer->srcAssetBuffer != NULL) {
+		uint8_t* srcPixel = (uint8_t*) buffer->srcAssetBuffer;
+		uint32_t* destPixel = (uint32_t*) buffer->destBackBuffer;
+
+		for(uint32_t row = 0; row < buffer->srcBitmapHeight; ++row) {
+			uint8_t* rowPtr = srcPixel + row * buffer->srcPitch;
+			for(uint32_t col = 0; col < buffer->srcBitmapWidth; ++col) {
+				uint8_t* colPtr = rowPtr + col * buffer->srcBytesPerPixel;
+				// In memory the format is BGR, due to little endian
+				uint8_t blue = (uint8_t) (*(colPtr + 0) + g_animationState.colorOffset[2]);
+				uint8_t green = (uint8_t) (*(colPtr + 1) + g_animationState.colorOffset[1]);
+				uint8_t red   = (uint8_t) (*(colPtr + 2) + g_animationState.colorOffset[0]);
+
+				*(destPixel++) = MEMRGB(red, green, blue);
+			}
+		}
+	} else {
+		uint32_t* destPixel = (uint32_t*) buffer->destBackBuffer;
+
+		for(uint32_t row = 0; row < buffer->destBitmapHeight; ++row) {
+			for(uint32_t col = 0; col < buffer->destBitmapWidth; ++col) {
+				uint8_t red   = (uint8_t) (col + g_animationState.colorOffset[0]);
+				uint8_t green = (uint8_t) (row + g_animationState.colorOffset[1]);
+				uint8_t blue  = (uint8_t) (0 + g_animationState.colorOffset[2]);
+				*(destPixel++) = MEMRGB(red, green, blue);
+			}
 		}
 	}
 
@@ -162,7 +220,7 @@ FillColorsInBackBuffer(
 
 static void
 CopyBackBufferToWindow(
-	BackBuffer* buffer,
+	GameAssetBuffer* buffer,
 	HWND hWnd
 )
 {
@@ -171,17 +229,17 @@ CopyBackBufferToWindow(
 	StretchDIBits(
 		g_deviceContext,
 		0, 0, window.width, window.height,
-		0, 0, buffer->bitmapWidth, buffer->bitmapHeight,
-		buffer->bitmapMemory,			// Bitmap memory that contains the color info
-		&buffer->bitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
+		0, 0, buffer->destBitmapWidth, buffer->destBitmapHeight,
+		buffer->destBackBuffer,			// Bitmap memory that contains the color info
+		&buffer->destBitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
 		SRCCOPY
 	);
 }
 
 static void
-RenderBitmapToWindow(
-	BackBuffer* buffer,
+RenderBackBufferToWindow(
+	GameAssetBuffer* buffer,
 	HWND hWnd
 )
 {
@@ -269,7 +327,7 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 			case 'W':
 			{
 				SetAnimationIncrementValue(0, 0);
-				SetAnimationIncrementValue(1, 3);
+				SetAnimationIncrementValue(1, 3); // Increase y offset color
 				SetAnimationIncrementValue(2, 0);
 			}
 			break;
@@ -278,7 +336,7 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 			case 'S':
 			{
 				SetAnimationIncrementValue(0, 0);
-				SetAnimationIncrementValue(1, -3);
+				SetAnimationIncrementValue(1, -3); // Decrease y offset color
 				SetAnimationIncrementValue(2, 0);
 			}
 			break;
@@ -286,7 +344,7 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 			case VK_LEFT:
 			case 'A':
 			{
-				SetAnimationIncrementValue(0, 3);
+				SetAnimationIncrementValue(0, 3); // Increase x offset color
 				SetAnimationIncrementValue(1, 0);
 				SetAnimationIncrementValue(2, 0);
 			}
@@ -295,7 +353,7 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 			case VK_RIGHT:
 			case 'D':
 			{
-				SetAnimationIncrementValue(0, -3);
+				SetAnimationIncrementValue(0, -3); // Decrease x offset color
 				SetAnimationIncrementValue(1, 0);
 				SetAnimationIncrementValue(2, 0);
 			}
@@ -410,7 +468,7 @@ void GameLoop(
 		}
 
 		GetUserInput();
-		RenderBitmapToWindow(&g_backBuffer, window);
+		RenderBackBufferToWindow(&g_backBuffer, window);
 	}
 	ReleaseDC(window, g_deviceContext);
 }
@@ -428,11 +486,10 @@ WinMain(
 	UNREFERENCED_PARAMETER(szCmdLine);
 	UNREFERENCED_PARAMETER(iCmdShow);
 
-	InitializeGame();
-
 	HWND gameWindow = CreateGameWindow(hInstance);
 
 	if (gameWindow != NULL) {
+		InitializeGame();
 		GameLoop(gameWindow);
 	}
 
