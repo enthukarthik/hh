@@ -389,9 +389,7 @@ FillSoundBuffer(
 	if(SUCCEEDED(buffer->soundBuffer->GetCurrentPosition(&cursorPlayPosition, &cursorWritePosition))) {
 		uint32_t soundCursorByte = buffer->soundCursor * bytesPerSample * buffer->noOfChannels; // On each soundCursor index we're writing 4 bytes. 2 bytes for LEFT channel, 2 bytes for RIGHT channel
 		uint32_t sizeOfBufferInBytesToLock = 0;
-		if(cursorPlayPosition == soundCursorByte) {
-			sizeOfBufferInBytesToLock = 0;
-		} else if(cursorPlayPosition < soundCursorByte) {
+		if(cursorPlayPosition < soundCursorByte) {
 			// If play position is before our running sample index, then bytes to lock is
 			// from current running sample index to the end of the buffer
 			// and start of the buffer to the play position
@@ -513,7 +511,7 @@ HandleXboxControllerInput()
 				int16_t rightThumbX = controllerState.Gamepad.sThumbRX;
 				int16_t rightThumbY = controllerState.Gamepad.sThumbRY;
 #endif
-				if(buttonA || buttonB || buttonX || buttonY || rightShoulder) {
+				if(buttonA || buttonB || rightShoulder) {
 					ToggleAnimation();
 				}
 
@@ -523,6 +521,11 @@ HandleXboxControllerInput()
 
 				if(dpadDown || dpadRight) {
 					ChangeAnimationIncrementValues(-1); // Decrement the animation value by 1
+				}
+
+				if(buttonX || buttonY) {
+					g_gameSoundBuffer.toneFrequency = 1024;
+					g_gameSoundBuffer.samplesPerCycle = g_gameSoundBuffer.samplesPerSecond / g_gameSoundBuffer.toneFrequency;
 				}
 
 				g_gameState.handledXInputPacket = controllerState.dwPacketNumber; // Update the handled packet number to avoid processing the same input multiple times
