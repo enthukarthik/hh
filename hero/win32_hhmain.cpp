@@ -62,6 +62,7 @@ struct GameSoundBuffer
 	uint32_t soundCursor;
 	uint32_t toneFrequency;
 	int16_t  volume;
+	bool     isSoundPlaying;
 };
 
 enum SoundWave
@@ -131,6 +132,7 @@ InitializeSoundInfo()
 	g_gameSoundBuffer.volume = 500;         // Amplitude of the signal
 	g_gameSoundBuffer.totalSamples = g_gameSoundBuffer.samplesPerSecond * g_gameSoundBuffer.bufferLengthInSec * g_gameSoundBuffer.noOfChannels;
 	g_gameSoundBuffer.bufferSizeInBytes = g_gameSoundBuffer.totalSamples * g_gameSoundBuffer.bitsPerSample / 8;
+	g_gameSoundBuffer.isSoundPlaying = false;
 }
 
 static void
@@ -178,26 +180,18 @@ AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
 	}
 }
 
-static void
-LoadGameAssets()
+static RectDimension
+GetClientWindowDimensions(
+	HWND hWnd
+)
 {
-	HANDLE p = LoadImageA(NULL, "AP.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
-	BITMAP file;
-	if(p) {
-		GetObject(p, sizeof(BITMAP), &file);
+	RECT clientRect;
+	GetClientRect(hWnd, &clientRect);
 
-		// Describe the memory layout of the bitmap
-		g_backBuffer.srcAssetBuffer  = file.bmBits;
-		g_backBuffer.srcPitch        = file.bmWidthBytes;
-		g_backBuffer.srcBitmapWidth  = file.bmWidth;
-		g_backBuffer.srcBitmapHeight = file.bmHeight;
-
-		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_backBuffer, file.bmWidth, file.bmHeight, false);
-	} else {
-		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_backBuffer, 1920, 1080, true); // Default back buffer size
-	}
+	RectDimension d;
+	d.width = clientRect.right - clientRect.left;
+	d.height = clientRect.bottom - clientRect.top;
+	return d;
 }
 
 static void
@@ -207,6 +201,50 @@ SetAnimationState()
 	for(int i = 0; i < 3; ++i) {
 		g_animationState.colorOffset[i] = 0;
 		g_animationState.incrementValue[i] = 0;
+	}
+}
+
+static void
+ToggleAnimation()
+{
+	g_animationState.animate = !g_animationState.animate;
+}
+
+static void
+ChangeAnimationIncrementValues(int32_t increment)
+{
+	for(int i = 0; i < 3; ++i) {
+		g_animationState.incrementValue[i] += increment;
+	}
+}
+
+static void
+SetAnimationIncrementValue(uint32_t channelIndex, int32_t increment)
+{
+	if(channelIndex < 3) {
+		g_animationState.incrementValue[channelIndex] = increment;
+	}
+}
+
+static void
+LoadGameAssets()
+{
+	HANDLE p = LoadImageA(NULL, "AP.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
+	BITMAP file;
+	if(p) {
+		GetObject(p, sizeof(BITMAP), &file);
+
+		// Describe the memory layout of the bitmap
+		g_backBuffer.srcAssetBuffer = file.bmBits;
+		g_backBuffer.srcPitch = file.bmWidthBytes;
+		g_backBuffer.srcBitmapWidth = file.bmWidth;
+		g_backBuffer.srcBitmapHeight = file.bmHeight;
+
+		InitializeBitmapInfo();
+		AllocateGameBackBuffer(&g_backBuffer, file.bmWidth, file.bmHeight, false);
+	} else {
+		InitializeBitmapInfo();
+		AllocateGameBackBuffer(&g_backBuffer, 1920, 1080, true); // Default back buffer size
 	}
 }
 
@@ -253,25 +291,11 @@ LoadGameLibraries(HWND gameWindow)
 static void
 InitializeGame(HWND gameWindow)
 {
-	g_gameRunning = true;
 	InitializeSoundInfo();
 	LoadGameLibraries(gameWindow);
 	LoadGameAssets();
 	SetAnimationState();
-}
-
-static RectDimension
-GetClientWindowDimensions(
-	HWND hWnd
-)
-{
-	RECT clientRect;
-	GetClientRect(hWnd, &clientRect);
-
-	RectDimension d;
-	d.width = clientRect.right - clientRect.left;
-	d.height = clientRect.bottom - clientRect.top;
-	return d;
+	g_gameRunning = true;
 }
 
 static void
@@ -407,7 +431,10 @@ PlaySoundBuffer(
 	GameSoundBuffer* buffer
 )
 {
-	buffer->soundBuffer->Play(0, 0, DSBPLAY_LOOPING);
+	if(!buffer->isSoundPlaying) {
+		buffer->soundBuffer->Play(0, 0, DSBPLAY_LOOPING);
+		buffer->isSoundPlaying = true;
+	}
 }
 
 static void
@@ -417,33 +444,11 @@ RenderGame(
 	HWND hWnd
 )
 {
-	FillSoundBuffer(soundBuffer, SQUARE_WAVE);
-	PlaySoundBuffer(soundBuffer);
-
 	FillColorsInBackBuffer(buffer);
 	CopyBackBufferToWindow(buffer, hWnd);
-}
 
-static void
-ToggleAnimation()
-{
-	g_animationState.animate = !g_animationState.animate;
-}
-
-static void
-ChangeAnimationIncrementValues(int32_t increment)
-{
-	for(int i = 0; i < 3; ++i) {
-		g_animationState.incrementValue[i] += increment;
-	}
-}
-
-static void
-SetAnimationIncrementValue(uint32_t channelIndex, int32_t increment)
-{
-	if(channelIndex < 3) {
-		g_animationState.incrementValue[channelIndex] = increment;
-	}
+	FillSoundBuffer(soundBuffer, SQUARE_WAVE);
+	PlaySoundBuffer(soundBuffer);
 }
 
 static void
