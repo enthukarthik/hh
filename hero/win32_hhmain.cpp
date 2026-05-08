@@ -1,12 +1,14 @@
 #include <windows.h>
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <Xinput.h>
-#include <stdio.h>
 #include <dsound.h>
+#include <math.h>
 
 // 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
 #define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
+#define PI 3.1415926f
 
 DWORD(*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
 DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECTED; }
@@ -51,18 +53,19 @@ struct GameInputState
 
 struct GameSoundBuffer
 {
+	struct IDirectSoundBuffer* soundBuffer;
+
 	uint32_t samplesPerSecond;
 	uint16_t bitsPerSample;
 	uint16_t noOfChannels;
 	uint32_t bufferLengthInSec;
 	uint32_t bufferSizeInBytes;
-	uint32_t samplesPerCycle; // Also called period
+	uint32_t samplesPerCycle; // Also called period, wavelength, cycle
 	uint32_t totalSamples;
-	struct IDirectSoundBuffer* soundBuffer;
 	uint32_t soundCursor;
 	uint32_t toneFrequency;
-	int16_t  volume;
-	bool     isSoundPlaying;
+	int16_t	 volume;
+	bool	 isSoundPlaying;
 };
 
 enum SoundWave
@@ -124,12 +127,12 @@ AllocateGameBackBuffer(
 static void
 InitializeSoundInfo()
 {
-	g_gameSoundBuffer.samplesPerSecond = 48000;        // 48 kHz. 44.1 kHz?? 44100?
-	g_gameSoundBuffer.noOfChannels = 2;			// Stereo channels. Left & Right
-	g_gameSoundBuffer.bufferLengthInSec = 2;			// 2 second buffer
-	g_gameSoundBuffer.bitsPerSample = 16;			// 16 bits per channel. CD quality
-	g_gameSoundBuffer.toneFrequency = 256;          // Middle C is 261.62. Approximating to 256
-	g_gameSoundBuffer.volume = 500;         // Amplitude of the signal
+	g_gameSoundBuffer.samplesPerSecond = 48000;										// 48 kHz. 44.1 kHz?? 44100?
+	g_gameSoundBuffer.noOfChannels = 2;												// Stereo channels. Left & Right
+	g_gameSoundBuffer.bufferLengthInSec = 2;										// 2 second buffer
+	g_gameSoundBuffer.toneFrequency = 256;											// Middle C is 261.62. Approximating to 256
+	g_gameSoundBuffer.volume = 3000;												// Amplitude of the signal
+	g_gameSoundBuffer.bitsPerSample = 16;											// 16 bits per channel. CD quality
 	g_gameSoundBuffer.totalSamples = g_gameSoundBuffer.samplesPerSecond * g_gameSoundBuffer.bufferLengthInSec * g_gameSoundBuffer.noOfChannels;
 	g_gameSoundBuffer.bufferSizeInBytes = g_gameSoundBuffer.totalSamples * g_gameSoundBuffer.bitsPerSample / 8;
 	g_gameSoundBuffer.isSoundPlaying = false;
@@ -339,6 +342,39 @@ FillColorsInBackBuffer(
 	}
 }
 
+static int16_t
+GetSoundSample(
+	GameSoundBuffer* buffer,
+	enum SoundWave waveType
+)
+{
+	uint32_t currSampleIndex = buffer->soundCursor;
+	uint32_t waveLength = buffer->samplesPerCycle;
+	uint32_t halfWaveLength = waveLength / 2;
+	int16_t maxAmplitude = buffer->volume;
+	int16_t sampleVal = 0;
+
+	switch(waveType) {
+		case SQUARE_WAVE:
+		{
+			sampleVal = (currSampleIndex / halfWaveLength) % 2 ? maxAmplitude : -maxAmplitude;
+		}
+		break;
+
+		case SINE_WAVE:
+		{
+			// Sine wave varies from 0 to 2 * PI. So split one wavelength into 2 * PI and take sample index worth of values from the cut
+			// (1/(WaveLength / 2 * PI)) * currSampleIndex => currSampleIndex * 2 * PI / WaveLength
+			float x = 2.0f * PI * ((float) currSampleIndex / (float) waveLength); // calculate sine period
+			float sine = sinf(x);
+			sampleVal = (int16_t)(sine * maxAmplitude);
+		}
+		break;
+	}
+
+	return sampleVal;
+}
+
 static void
 FillSoundBuffer(
 	GameSoundBuffer* buffer,
@@ -346,7 +382,6 @@ FillSoundBuffer(
 )
 {
 	buffer->samplesPerCycle = buffer->samplesPerSecond / buffer->toneFrequency; // samples/sec by cycles/sec => samples/cycle. Also mentioned as wave period in the lectures
-	uint32_t halfPeriod = buffer->samplesPerCycle / 2;
 	uint32_t bytesPerSample = buffer->bitsPerSample / 8;
 
 	unsigned long cursorPlayPosition = 0;
@@ -354,7 +389,13 @@ FillSoundBuffer(
 	if(SUCCEEDED(buffer->soundBuffer->GetCurrentPosition(&cursorPlayPosition, &cursorWritePosition))) {
 		uint32_t soundCursorByte = buffer->soundCursor * bytesPerSample * buffer->noOfChannels; // On each soundCursor index we're writing 4 bytes. 2 bytes for LEFT channel, 2 bytes for RIGHT channel
 		uint32_t sizeOfBufferInBytesToLock = 0;
-		if(cursorPlayPosition < soundCursorByte) {
+		if(cursorPlayPosition == soundCursorByte) {
+			if(buffer->isSoundPlaying) {
+				sizeOfBufferInBytesToLock = 0;
+			} else {
+				sizeOfBufferInBytesToLock = buffer->bufferSizeInBytes;
+			}
+		} else if(cursorPlayPosition < soundCursorByte) {
 			// If play position is before our running sample index, then bytes to lock is
 			// from current running sample index to the end of the buffer
 			// and start of the buffer to the play position
@@ -376,32 +417,29 @@ FillSoundBuffer(
 											   // dwFlags in Lock = DSBLOCK_FROMWRITECURSOR ignores dwOffset or DSBLOCK_ENTIREBUFFER ignores sizeOfBufferToLock. We don't want both
 
 			// Write into the sound buffer
-			if(waveType == SQUARE_WAVE) {
-				// Write region1 sound data
-				uint16_t* region1Mem = (uint16_t*) region1;
-				uint32_t noOfSamplesPerRegion1 = region1SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample. Each iteration we're writing two samples for each channel
-				for(uint32_t i = 0; i < noOfSamplesPerRegion1; ++i) {
-					// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
-					// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
-					int16_t sampleVal = (buffer->soundCursor / halfPeriod) % 2 ? buffer->volume : -buffer->volume;
-					*region1Mem++ = sampleVal; // LEFT channel sound data
-					*region1Mem++ = sampleVal; // RIGHT channel sound data
-					buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
-				}
-
-				// Write region2 sound data
-				uint16_t* region2Mem = (uint16_t*) region2;
-				uint32_t noOfSamplesPerRegion2 = region2SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample
-				for(uint32_t i = 0; i < noOfSamplesPerRegion2; ++i) {
-					// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
-					// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
-					int16_t sampleVal = (buffer->soundCursor / halfPeriod) % 2 ? buffer->volume : -buffer->volume;
-					*region2Mem++ = sampleVal; // LEFT channel sound data
-					*region2Mem++ = sampleVal; // RIGHT channel sound data
-					buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
-				}
+     		// Write region1 sound data
+			uint16_t* region1Mem = (uint16_t*) region1;
+			uint32_t noOfSamplesPerRegion1 = region1SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample. Each iteration we're writing two samples for each channel
+			for(uint32_t i = 0; i < noOfSamplesPerRegion1; ++i) {
+				// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
+				// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
+				int16_t sampleVal = GetSoundSample(buffer, waveType);
+				*region1Mem++ = sampleVal; // LEFT channel sound data
+				*region1Mem++ = sampleVal; // RIGHT channel sound data
+				buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
 			}
 
+			// Write region2 sound data
+			uint16_t* region2Mem = (uint16_t*) region2;
+			uint32_t noOfSamplesPerRegion2 = region2SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample
+			for(uint32_t i = 0; i < noOfSamplesPerRegion2; ++i) {
+				// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
+				// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
+				int16_t sampleVal = GetSoundSample(buffer, waveType);
+				*region2Mem++ = sampleVal; // LEFT channel sound data
+				*region2Mem++ = sampleVal; // RIGHT channel sound data
+				buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
+			}
 			buffer->soundBuffer->Unlock(region1, region1SizeInBytes, region2, region2SizeInBytes);
 		}
 	}
@@ -447,7 +485,7 @@ RenderGame(
 	FillColorsInBackBuffer(buffer);
 	CopyBackBufferToWindow(buffer, hWnd);
 
-	FillSoundBuffer(soundBuffer, SQUARE_WAVE);
+	FillSoundBuffer(soundBuffer, SINE_WAVE);
 	PlaySoundBuffer(soundBuffer);
 }
 
