@@ -390,11 +390,7 @@ FillSoundBuffer(
 		uint32_t soundCursorByte = buffer->soundCursor * bytesPerSample * buffer->noOfChannels; // On each soundCursor index we're writing 4 bytes. 2 bytes for LEFT channel, 2 bytes for RIGHT channel
 		uint32_t sizeOfBufferInBytesToLock = 0;
 		if(cursorPlayPosition == soundCursorByte) {
-			if(buffer->isSoundPlaying) {
-				sizeOfBufferInBytesToLock = 0;
-			} else {
-				sizeOfBufferInBytesToLock = buffer->bufferSizeInBytes;
-			}
+			sizeOfBufferInBytesToLock = 0;
 		} else if(cursorPlayPosition < soundCursorByte) {
 			// If play position is before our running sample index, then bytes to lock is
 			// from current running sample index to the end of the buffer
