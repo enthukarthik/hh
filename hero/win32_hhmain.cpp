@@ -46,9 +46,18 @@ struct GameAnimationState
 	uint32_t incrementValue[3];
 };
 
-struct GameInputState
+struct GameState
 {
 	uint32_t handledXInputPacket;
+	int64_t qpFrequency;				// cycles/sec
+	int64_t qpCounterOld;				// micro second elapsed
+	int64_t qpCounterCurrent;			// micro second elapsed
+	int64_t qpCounterDiff;
+	int64_t cycleCounterOld;			// clock cycle elapsed
+	int64_t cycleCounterCurrent;		// clock cycle elapsed
+	int64_t cycleCounterDiff;
+	float   msPerFrame;
+	float   fps;
 };
 
 struct GameSoundBuffer
@@ -79,7 +88,7 @@ static HDC							g_deviceContext;
 static struct GameBackBuffer		g_backBuffer;
 static struct GameSoundBuffer		g_gameSoundBuffer;
 static struct GameAnimationState    g_animationState;
-static struct GameInputState		g_gameState;
+static struct GameState				g_gameState;
 
 static void
 InitializeBitmapInfo()
@@ -292,12 +301,27 @@ LoadGameLibraries(HWND gameWindow)
 }
 
 static void
+InitializeGameTime()
+{
+	LARGE_INTEGER qpFrequency;
+	QueryPerformanceFrequency(&qpFrequency);
+	g_gameState.qpFrequency = qpFrequency.QuadPart; // The value of the frequency in which perf counter gets updated in Windows
+
+	LARGE_INTEGER oldCounter;
+	QueryPerformanceCounter(&oldCounter);
+	g_gameState.qpCounterOld = oldCounter.QuadPart; // The value of high resolution time stamp in microsecond precision
+
+	g_gameState.cycleCounterOld = __rdtsc();
+}
+
+static void
 InitializeGame(HWND gameWindow)
 {
 	InitializeSoundInfo();
 	LoadGameLibraries(gameWindow);
 	LoadGameAssets();
 	SetAnimationState();
+	InitializeGameTime();
 	g_gameRunning = true;
 }
 
@@ -363,7 +387,7 @@ GetSoundSample(
 
 		case SINE_WAVE:
 		{
-			// Sine wave varies from 0 to 2 * PI. So split one wavelength into 2 * PI and take sample index worth of values from the cut
+			// Sine wave varies from -1 to 1 in the period 0 to 2 * PI. So split one wavelength into 2 * PI and take sample index worth of values from the cut
 			// (1/(WaveLength / 2 * PI)) * currSampleIndex => currSampleIndex * 2 * PI / WaveLength
 			float x = 2.0f * PI * ((float) currSampleIndex / (float) waveLength); // calculate sine period
 			float sine = sinf(x);
@@ -606,6 +630,57 @@ HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 }
 
 static void
+PrintDebugString(
+	const char* szFormat,
+	...
+)
+{
+	char buffer[256] = {0};
+	va_list pArgList;
+	va_start(pArgList, szFormat);
+	_vsnprintf_s(buffer, sizeof(buffer) / sizeof(buffer[0]), szFormat, pArgList);
+	va_end(pArgList);
+
+	OutputDebugStringA(buffer);
+}
+
+static void 
+PrintGameStats()
+{
+	float megaCyclesElapsed = g_gameState.cycleCounterDiff / (1000.0f * 1000.0f);
+	PrintDebugString("%.2f ms/f, %.2f fps, %.2f mc/f\n", g_gameState.msPerFrame, g_gameState.fps, megaCyclesElapsed);
+}
+
+static void
+CalculateGameStats()
+{
+	int64_t cycleCountPerSec     = g_gameState.qpFrequency;   // cycle counts/sec. Constant value and cached during game start
+	int64_t perfCounterElapsed   = g_gameState.qpCounterDiff; // cycle counts per a single frame rendered in the game loop
+
+	// Perf counter would increase cycleCounts in a second, so for perfCounterElapsed cycles how much seconds would have passed?
+	float secPerFrame = (float) perfCounterElapsed / (float) cycleCountPerSec; // cycle counts * sec/cycle counts => seconds. float typecast to avoid int division to zero
+	g_gameState.msPerFrame = secPerFrame * 1000;
+	g_gameState.fps = (float) cycleCountPerSec / (float) perfCounterElapsed; // (cycle count / sec) * (frame / cycle count) => frame/sec
+}
+
+static void 
+UpdateCurrentGameTime()
+{
+	LARGE_INTEGER currentCounter;
+	QueryPerformanceCounter(&currentCounter);
+	g_gameState.qpCounterCurrent = currentCounter.QuadPart;
+	g_gameState.qpCounterDiff = g_gameState.qpCounterCurrent - g_gameState.qpCounterOld;
+	g_gameState.qpCounterOld = g_gameState.qpCounterCurrent;
+
+	g_gameState.cycleCounterCurrent = __rdtsc();
+	g_gameState.cycleCounterDiff = g_gameState.cycleCounterCurrent - g_gameState.cycleCounterOld;
+	g_gameState.cycleCounterOld = g_gameState.cycleCounterCurrent;
+
+	CalculateGameStats();
+	PrintGameStats();
+}
+
+static void
 GetUserInput()
 {
 	HandleXboxControllerInput();
@@ -688,6 +763,7 @@ void GameLoop(
 
 		GetUserInput();
 		RenderGame(&g_backBuffer, &g_gameSoundBuffer, window);
+		UpdateCurrentGameTime();
 	}
 	ReleaseDC(window, g_deviceContext);
 }
