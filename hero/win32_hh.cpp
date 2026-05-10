@@ -1,13 +1,11 @@
+#include "hh.cpp"
+
 #include <windows.h>
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
 #include <Xinput.h>
 #include <dsound.h>
 #include <math.h>
 
-// 32 bit color is expected to be in ARGB format. In the memory it'll be written as BGRA due to little endian architecture
-#define MEMRGB(r, g, b) (((uint32_t)(r)) << 16 | ((uint32_t)(g)) << 8 | (uint32_t)(b))
 #define PI 3.1415926f
 
 DWORD(*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
@@ -19,34 +17,14 @@ DWORD XInputSetStateStub(DWORD, XINPUT_VIBRATION*) { return ERROR_DEVICE_NOT_CON
 typedef HRESULT WINAPI DynDirectSoundCreate(LPCGUID pcGuidDevice, LPDIRECTSOUND* ppDS, LPUNKNOWN pUnkOuter);
 static DynDirectSoundCreate* g_fnDirectSoundCreate;
 
-struct GameBackBuffer {
-	void*      srcAssetBuffer;
-	uint32_t   srcBitmapWidth;
-	uint32_t   srcBitmapHeight;
-	uint32_t   srcBytesPerPixel;
-	uint32_t   srcPitch;
-
+struct Win32_GameBackBuffer 
+{
+	struct GameBackBuffer src;
+	struct GameBackBuffer dest;
 	BITMAPINFO destBitmapInfo;
-	void*      destBackBuffer;
-	uint32_t   destBitmapWidth;
-	uint32_t   destBitmapHeight;
-	uint32_t   destBytesPerPixel;
 };
 
-struct RectDimension
-{
-	uint32_t width;
-	uint32_t height;
-};
-
-struct GameAnimationState
-{
-	bool	 animate;
-	uint32_t colorOffset[3];
-	uint32_t incrementValue[3];
-};
-
-struct GameState
+struct Win32_GameState
 {
 	uint32_t handledXInputPacket;
 	int64_t qpFrequency;				// cycles/sec
@@ -60,10 +38,9 @@ struct GameState
 	float   fps;
 };
 
-struct GameSoundBuffer
+struct Win32_GameSoundBuffer
 {
 	struct IDirectSoundBuffer* soundBuffer;
-
 	uint32_t samplesPerSecond;
 	uint16_t bitsPerSample;
 	uint16_t noOfChannels;
@@ -83,40 +60,39 @@ enum SoundWave
 	SINE_WAVE
 };
 
-static bool							g_gameRunning;
-static HDC							g_deviceContext;
-static struct GameBackBuffer		g_backBuffer;
-static struct GameSoundBuffer		g_gameSoundBuffer;
-static struct GameAnimationState    g_animationState;
-static struct GameState				g_gameState;
+static bool                         g_gameRunning;
+static HDC                          g_win32DC;
+static struct Win32_GameBackBuffer  g_win32BackBuffer;
+static struct Win32_GameSoundBuffer g_win32SoundBuffer;
+static struct Win32_GameState       g_gameState;
 
 static void
 InitializeBitmapInfo()
 {
-	g_backBuffer.srcBytesPerPixel = 3; // usual bmp file allows 24-bit bmp data
+	g_win32BackBuffer.src.bytesPerPixel = 3; // usual bmp file allows 24-bit bmp data
 
-	g_backBuffer.destBytesPerPixel = 4;
-	g_backBuffer.destBitmapInfo.bmiHeader.biSize = sizeof(g_backBuffer.destBitmapInfo.bmiHeader);
-	g_backBuffer.destBitmapInfo.bmiHeader.biPlanes = 1; // Must be set to 1
-	g_backBuffer.destBitmapInfo.bmiHeader.biBitCount = (uint16_t) g_backBuffer.destBytesPerPixel * 8;
-	g_backBuffer.destBitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
+	g_win32BackBuffer.dest.bytesPerPixel = 4;
+	g_win32BackBuffer.destBitmapInfo.bmiHeader.biSize = sizeof(g_win32BackBuffer.destBitmapInfo.bmiHeader);
+	g_win32BackBuffer.destBitmapInfo.bmiHeader.biPlanes = 1; // Must be set to 1
+	g_win32BackBuffer.destBitmapInfo.bmiHeader.biBitCount = (uint16_t) g_win32BackBuffer.dest.bytesPerPixel * 8;
+	g_win32BackBuffer.destBitmapInfo.bmiHeader.biCompression = BI_RGB; // No compression
 }
 
 static void
 AllocateGameBackBuffer(
-	GameBackBuffer* buffer,
+	Win32_GameBackBuffer* buffer,
 	uint32_t width,
 	uint32_t height,
 	bool topDownDIB
 )
 {
 	// Free the old bitmap memory if it exists
-	if(buffer->destBackBuffer != NULL) {
-		VirtualFree(buffer->destBackBuffer, 0, MEM_RELEASE);
+	if(buffer->dest.memory != NULL) {
+		VirtualFree(buffer->dest.memory, 0, MEM_RELEASE);
 	}
 
-	buffer->destBitmapWidth = width;
-	buffer->destBitmapHeight = height;
+	buffer->dest.width = width;
+	buffer->dest.height = height;
 	buffer->destBitmapInfo.bmiHeader.biWidth = width;
 	if(topDownDIB) {
 		buffer->destBitmapInfo.bmiHeader.biHeight = -((int32_t) height); // Negative height to indicate a top-down DIB. Casting to int32_t to avoid implicit conversion to unsigned type to unsigned.
@@ -125,9 +101,9 @@ AllocateGameBackBuffer(
 	}
 
 
-	buffer->destBackBuffer = VirtualAlloc(
+	buffer->dest.memory = VirtualAlloc(
 		NULL,
-		(uint64_t) (buffer->destBitmapWidth * buffer->destBitmapHeight * buffer->destBytesPerPixel),
+		(uint64_t) (buffer->dest.width * buffer->dest.height * buffer->dest.bytesPerPixel),
 		MEM_COMMIT | MEM_RESERVE,
 		PAGE_READWRITE
 	);
@@ -136,15 +112,15 @@ AllocateGameBackBuffer(
 static void
 InitializeSoundInfo()
 {
-	g_gameSoundBuffer.samplesPerSecond = 48000;										// 48 kHz. 44.1 kHz?? 44100?
-	g_gameSoundBuffer.noOfChannels = 2;												// Stereo channels. Left & Right
-	g_gameSoundBuffer.bufferLengthInSec = 2;										// 2 second buffer
-	g_gameSoundBuffer.toneFrequency = 256;											// Middle C is 261.62. Approximating to 256
-	g_gameSoundBuffer.volume = 3000;												// Amplitude of the signal
-	g_gameSoundBuffer.bitsPerSample = 16;											// 16 bits per channel. CD quality
-	g_gameSoundBuffer.totalSamples = g_gameSoundBuffer.samplesPerSecond * g_gameSoundBuffer.bufferLengthInSec * g_gameSoundBuffer.noOfChannels;
-	g_gameSoundBuffer.bufferSizeInBytes = g_gameSoundBuffer.totalSamples * g_gameSoundBuffer.bitsPerSample / 8;
-	g_gameSoundBuffer.isSoundPlaying = false;
+	g_win32SoundBuffer.samplesPerSecond = 48000;	// 48 kHz. 44.1 kHz?? 44100?
+	g_win32SoundBuffer.noOfChannels = 2;			// Stereo channels. Left & Right
+	g_win32SoundBuffer.bufferLengthInSec = 2;		// 2 second buffer
+	g_win32SoundBuffer.toneFrequency = 256;			// Middle C is 261.62. Approximating to 256
+	g_win32SoundBuffer.volume = 3000;				// Amplitude of the signal
+	g_win32SoundBuffer.bitsPerSample = 16;			// 16 bits per channel. CD quality
+	g_win32SoundBuffer.totalSamples = g_win32SoundBuffer.samplesPerSecond * g_win32SoundBuffer.bufferLengthInSec * g_win32SoundBuffer.noOfChannels;
+	g_win32SoundBuffer.bufferSizeInBytes = g_win32SoundBuffer.totalSamples * g_win32SoundBuffer.bitsPerSample / 8;
+	g_win32SoundBuffer.isSoundPlaying = false;
 }
 
 static void
@@ -155,9 +131,9 @@ AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
 	if(g_fnDirectSoundCreate && SUCCEEDED(g_fnDirectSoundCreate(NULL, &dsoundObj, 0))) { // DirectSoundCreate function populate the structure into the dsoundObj
 		WAVEFORMATEX waveFormat    = {0};
 		waveFormat.wFormatTag      = WAVE_FORMAT_PCM; // Uncompressed Pulse Code Modulation format
-		waveFormat.nChannels	   = g_gameSoundBuffer.noOfChannels;
+		waveFormat.nChannels	   = g_win32SoundBuffer.noOfChannels;
 		waveFormat.nSamplesPerSec  = samplePerSec;
-		waveFormat.wBitsPerSample  = g_gameSoundBuffer.bitsPerSample;
+		waveFormat.wBitsPerSample  = g_win32SoundBuffer.bitsPerSample;
 		waveFormat.nBlockAlign	   = waveFormat.nChannels * waveFormat.wBitsPerSample / 8; // As per documentation
 		waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign; // As per documentation
 		waveFormat.cbSize		   = 0;
@@ -186,55 +162,9 @@ AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
 		dsBufferDescription.dwBufferBytes = bufferSize;
 		dsBufferDescription.lpwfxFormat   = &waveFormat;
 
-		if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &g_gameSoundBuffer.soundBuffer, 0))) {
+		if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &g_win32SoundBuffer.soundBuffer, 0))) {
 			OutputDebugString(TEXT("AllocateSoundBuffer : Secondary Buffer set\n"));
 		}
-	}
-}
-
-static RectDimension
-GetClientWindowDimensions(
-	HWND hWnd
-)
-{
-	RECT clientRect;
-	GetClientRect(hWnd, &clientRect);
-
-	RectDimension d;
-	d.width = clientRect.right - clientRect.left;
-	d.height = clientRect.bottom - clientRect.top;
-	return d;
-}
-
-static void
-SetAnimationState()
-{
-	g_animationState.animate = true;
-	for(int i = 0; i < 3; ++i) {
-		g_animationState.colorOffset[i] = 0;
-		g_animationState.incrementValue[i] = 0;
-	}
-}
-
-static void
-ToggleAnimation()
-{
-	g_animationState.animate = !g_animationState.animate;
-}
-
-static void
-ChangeAnimationIncrementValues(int32_t increment)
-{
-	for(int i = 0; i < 3; ++i) {
-		g_animationState.incrementValue[i] += increment;
-	}
-}
-
-static void
-SetAnimationIncrementValue(uint32_t channelIndex, int32_t increment)
-{
-	if(channelIndex < 3) {
-		g_animationState.incrementValue[channelIndex] = increment;
 	}
 }
 
@@ -247,16 +177,15 @@ LoadGameAssets()
 		GetObject(p, sizeof(BITMAP), &file);
 
 		// Describe the memory layout of the bitmap
-		g_backBuffer.srcAssetBuffer = file.bmBits;
-		g_backBuffer.srcPitch = file.bmWidthBytes;
-		g_backBuffer.srcBitmapWidth = file.bmWidth;
-		g_backBuffer.srcBitmapHeight = file.bmHeight;
+		g_win32BackBuffer.src.memory = file.bmBits;
+		g_win32BackBuffer.src.width= file.bmWidth;
+		g_win32BackBuffer.src.height = file.bmHeight;
 
 		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_backBuffer, file.bmWidth, file.bmHeight, false);
+		AllocateGameBackBuffer(&g_win32BackBuffer, file.bmWidth, file.bmHeight, false);
 	} else {
 		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_backBuffer, 1920, 1080, true); // Default back buffer size
+		AllocateGameBackBuffer(&g_win32BackBuffer, 1920, 1080, true); // Default back buffer size
 	}
 }
 
@@ -297,7 +226,7 @@ static void
 LoadGameLibraries(HWND gameWindow)
 {
 	LoadXInputLibrary();
-	LoadDirectSoundLibrary(gameWindow, g_gameSoundBuffer.bufferSizeInBytes, g_gameSoundBuffer.samplesPerSecond);
+	LoadDirectSoundLibrary(gameWindow, g_win32SoundBuffer.bufferSizeInBytes, g_win32SoundBuffer.samplesPerSecond);
 }
 
 static void
@@ -325,50 +254,9 @@ InitializeGame(HWND gameWindow)
 	g_gameRunning = true;
 }
 
-static void
-FillColorsInBackBuffer(
-	GameBackBuffer* buffer
-)
-{
-	if(buffer->srcAssetBuffer != NULL) {
-		uint8_t* srcPixel = (uint8_t*) buffer->srcAssetBuffer;
-		uint32_t* destPixel = (uint32_t*) buffer->destBackBuffer;
-
-		for(uint32_t row = 0; row < buffer->srcBitmapHeight; ++row) {
-			uint8_t* rowPtr = srcPixel + row * buffer->srcPitch;
-			for(uint32_t col = 0; col < buffer->srcBitmapWidth; ++col) {
-				uint8_t* colPtr = rowPtr + col * buffer->srcBytesPerPixel;
-				// In memory the format is BGR, due to little endian
-				uint8_t blue  = (uint8_t) (*(colPtr + 0) + g_animationState.colorOffset[2]);
-				uint8_t green = (uint8_t) (*(colPtr + 1) + g_animationState.colorOffset[1]);
-				uint8_t red   = (uint8_t) (*(colPtr + 2) + g_animationState.colorOffset[0]);
-
-				*(destPixel++) = MEMRGB(red, green, blue);
-			}
-		}
-	} else {
-		uint32_t* destPixel = (uint32_t*) buffer->destBackBuffer;
-
-		for(uint32_t row = 0; row < buffer->destBitmapHeight; ++row) {
-			for(uint32_t col = 0; col < buffer->destBitmapWidth; ++col) {
-				uint8_t red   = (uint8_t) (col + g_animationState.colorOffset[0]);
-				uint8_t green = (uint8_t) (row + g_animationState.colorOffset[1]);
-				uint8_t blue  = (uint8_t) (0 + g_animationState.colorOffset[2]);
-				*(destPixel++) = MEMRGB(red, green, blue);
-			}
-		}
-	}
-
-	if(g_animationState.animate) {
-		for(int i = 0; i < 3; ++i) {
-			g_animationState.colorOffset[i] += g_animationState.incrementValue[i];
-		}
-	}
-}
-
 static int16_t
 GetSoundSample(
-	GameSoundBuffer* buffer,
+	Win32_GameSoundBuffer* buffer,
 	enum SoundWave waveType
 )
 {
@@ -401,7 +289,7 @@ GetSoundSample(
 
 static void
 FillSoundBuffer(
-	GameSoundBuffer* buffer,
+	Win32_GameSoundBuffer* buffer,
 	enum SoundWave waveType
 )
 {
@@ -465,17 +353,21 @@ FillSoundBuffer(
 
 static void
 CopyBackBufferToWindow(
-	GameBackBuffer* buffer,
+	Win32_GameBackBuffer* buffer,
 	HWND hWnd
 )
 {
-	RectDimension window = GetClientWindowDimensions(hWnd);
+	RECT clientRect;
+	GetClientRect(hWnd, &clientRect);
+
+	uint32_t width = clientRect.right - clientRect.left;
+	uint32_t height = clientRect.bottom - clientRect.top;
 
 	StretchDIBits(
-		g_deviceContext,
-		0, 0, window.width, window.height,
-		0, 0, buffer->destBitmapWidth, buffer->destBitmapHeight,
-		buffer->destBackBuffer,			// Bitmap memory that contains the color info
+		g_win32DC,
+		0, 0, width, height,
+		0, 0, buffer->dest.width, buffer->dest.height,
+		buffer->dest.memory,			// Bitmap memory that contains the color info
 		&buffer->destBitmapInfo,			// BitmapInfo that describes the format of the bitmap memory
 		DIB_RGB_COLORS,
 		SRCCOPY
@@ -484,7 +376,7 @@ CopyBackBufferToWindow(
 
 static void
 PlaySoundBuffer(
-	GameSoundBuffer* buffer
+	Win32_GameSoundBuffer* buffer
 )
 {
 	if(!buffer->isSoundPlaying) {
@@ -495,12 +387,12 @@ PlaySoundBuffer(
 
 static void
 RenderGame(
-	GameBackBuffer* buffer,
-	GameSoundBuffer* soundBuffer,
+	Win32_GameBackBuffer* buffer,
+	Win32_GameSoundBuffer* soundBuffer,
 	HWND hWnd
 )
 {
-	FillColorsInBackBuffer(buffer);
+	FillColorsInBackBuffer(&buffer->dest);
 	CopyBackBufferToWindow(buffer, hWnd);
 
 	FillSoundBuffer(soundBuffer, SINE_WAVE);
@@ -508,7 +400,7 @@ RenderGame(
 }
 
 static void
-HandleXboxControllerInput()
+Win32_HandleXboxControllerInput()
 {
 	//Get Xbox Controller Input
 	for(uint32_t controllerIndex = 0; controllerIndex < XUSER_MAX_COUNT; ++controllerIndex) {
@@ -548,8 +440,8 @@ HandleXboxControllerInput()
 				}
 
 				if(buttonX || buttonY) {
-					g_gameSoundBuffer.toneFrequency = 1024;
-					g_gameSoundBuffer.samplesPerCycle = g_gameSoundBuffer.samplesPerSecond / g_gameSoundBuffer.toneFrequency;
+					g_win32SoundBuffer.toneFrequency = 1024;
+					g_win32SoundBuffer.samplesPerCycle = g_win32SoundBuffer.samplesPerSecond / g_win32SoundBuffer.toneFrequency;
 				}
 
 				g_gameState.handledXInputPacket = controllerState.dwPacketNumber; // Update the handled packet number to avoid processing the same input multiple times
@@ -559,7 +451,7 @@ HandleXboxControllerInput()
 }
 
 static void
-HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
+Win32_HandleKeyboardInput(WPARAM wParam, LPARAM lParam)
 {
 	//bool prevKeyState = (lParam & (1ul << 30)) != 0; // 30th bit is 0 if the key was previously up, 1 if it was previously down. The variable is true if the key was previously down, false if it was previously up.
 	bool isKeyPressed = (lParam & (1ul << 31)) == 0; // 31st bit is always 0 for key down messages. The variable is true if the key is currently down, false if it is currently up.
@@ -664,7 +556,7 @@ CalculateGameStats()
 }
 
 static void 
-UpdateCurrentGameTime()
+UpdateGameTimeInfo()
 {
 	LARGE_INTEGER currentCounter;
 	QueryPerformanceCounter(&currentCounter);
@@ -683,11 +575,11 @@ UpdateCurrentGameTime()
 static void
 GetUserInput()
 {
-	HandleXboxControllerInput();
+	Win32_HandleXboxControllerInput();
 }
 
 LRESULT CALLBACK 
-GameWndProc(
+Win32_WndProc(
 	HWND hWnd,
 	UINT uMsg,
 	WPARAM wParam,
@@ -708,7 +600,7 @@ GameWndProc(
 		case WM_KEYDOWN:
 		case WM_KEYUP:
 		{
-			HandleKeyboardInput(wParam, lParam);
+			Win32_HandleKeyboardInput(wParam, lParam);
 		}
 		break;
 
@@ -719,14 +611,15 @@ GameWndProc(
 	return result;
 }
 
-HWND CreateGameWindow(
+HWND 
+Win32_CreateGameWindow(
 	HINSTANCE hInstance
 )
 {
 	WNDCLASSEX wc    = {0}; // Initialize the entire structure to zero to avoid uninitialized members
 	wc.cbSize        = sizeof(WNDCLASSEX);
 	wc.style         = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
-	wc.lpfnWndProc   = GameWndProc;
+	wc.lpfnWndProc   = Win32_WndProc;
 	wc.hInstance     = hInstance;
 	wc.lpszClassName = TEXT("PeakHeroWindowClass");
 
@@ -745,11 +638,12 @@ HWND CreateGameWindow(
 	}
 }
 
-void GameLoop(
+void 
+Win32_MessageLoop(
 	HWND window
 )
 {
-	g_deviceContext = GetDC(window);
+	g_win32DC = GetDC(window);
 	while(g_gameRunning) {
 		MSG msg;
 		while(PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
@@ -762,10 +656,10 @@ void GameLoop(
 		}
 
 		GetUserInput();
-		RenderGame(&g_backBuffer, &g_gameSoundBuffer, window);
-		UpdateCurrentGameTime();
+		RenderGame(&g_win32BackBuffer, &g_win32SoundBuffer, window);
+		UpdateGameTimeInfo();
 	}
-	ReleaseDC(window, g_deviceContext);
+	ReleaseDC(window, g_win32DC);
 }
 
 #pragma warning (disable:28251) // Disable warning about "Inconsistent annotation for 'WinMain' because we don't want to annotate WinMain with SAL annotations.
@@ -781,11 +675,11 @@ WinMain(
 	UNREFERENCED_PARAMETER(szCmdLine);
 	UNREFERENCED_PARAMETER(iCmdShow);
 
-	HWND gameWindow = CreateGameWindow(hInstance);
+	HWND gameWindow = Win32_CreateGameWindow(hInstance);
 
 	if (gameWindow != NULL) {
 		InitializeGame(gameWindow);
-		GameLoop(gameWindow);
+		Win32_MessageLoop(gameWindow);
 	}
 
 	return 0;
