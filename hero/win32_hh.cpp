@@ -4,9 +4,6 @@
 #include <stdio.h>
 #include <Xinput.h>
 #include <dsound.h>
-#include <math.h>
-
-#define PI 3.1415926f
 
 DWORD(*DynXInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
 DWORD XInputGetStateStub(DWORD, XINPUT_STATE*) { return ERROR_DEVICE_NOT_CONNECTED; }
@@ -41,23 +38,8 @@ struct Win32_GameState
 struct Win32_GameSoundBuffer
 {
 	struct IDirectSoundBuffer* soundBuffer;
-	uint32_t samplesPerSecond;
-	uint16_t bitsPerSample;
-	uint16_t noOfChannels;
-	uint32_t bufferLengthInSec;
-	uint32_t bufferSizeInBytes;
-	uint32_t samplesPerCycle; // Also called period, wavelength, cycle
-	uint32_t totalSamples;
-	uint32_t soundCursor;
-	uint32_t toneFrequency;
-	int16_t	 volume;
-	bool	 isSoundPlaying;
-};
-
-enum SoundWave
-{
-	SQUARE_WAVE,
-	SINE_WAVE
+	struct GameSoundBuffer prop;
+	bool isSoundPlaying;
 };
 
 static bool                         g_gameRunning;
@@ -67,7 +49,7 @@ static struct Win32_GameSoundBuffer g_win32SoundBuffer;
 static struct Win32_GameState       g_gameState;
 
 static void
-InitializeBitmapInfo()
+Win32_InitializeBitmapInfo()
 {
 	g_win32BackBuffer.src.bytesPerPixel = 3; // usual bmp file allows 24-bit bmp data
 
@@ -79,7 +61,7 @@ InitializeBitmapInfo()
 }
 
 static void
-AllocateGameBackBuffer(
+Win32_AllocateGameBackBuffer(
 	Win32_GameBackBuffer* buffer,
 	uint32_t width,
 	uint32_t height,
@@ -100,7 +82,6 @@ AllocateGameBackBuffer(
 		buffer->destBitmapInfo.bmiHeader.biHeight = height;
 	}
 
-
 	buffer->dest.memory = VirtualAlloc(
 		NULL,
 		(uint64_t) (buffer->dest.width * buffer->dest.height * buffer->dest.bytesPerPixel),
@@ -110,30 +91,23 @@ AllocateGameBackBuffer(
 }
 
 static void
-InitializeSoundInfo()
+Win32_InitializeSoundInfo()
 {
-	g_win32SoundBuffer.samplesPerSecond = 48000;	// 48 kHz. 44.1 kHz?? 44100?
-	g_win32SoundBuffer.noOfChannels = 2;			// Stereo channels. Left & Right
-	g_win32SoundBuffer.bufferLengthInSec = 2;		// 2 second buffer
-	g_win32SoundBuffer.toneFrequency = 256;			// Middle C is 261.62. Approximating to 256
-	g_win32SoundBuffer.volume = 3000;				// Amplitude of the signal
-	g_win32SoundBuffer.bitsPerSample = 16;			// 16 bits per channel. CD quality
-	g_win32SoundBuffer.totalSamples = g_win32SoundBuffer.samplesPerSecond * g_win32SoundBuffer.bufferLengthInSec * g_win32SoundBuffer.noOfChannels;
-	g_win32SoundBuffer.bufferSizeInBytes = g_win32SoundBuffer.totalSamples * g_win32SoundBuffer.bitsPerSample / 8;
+	g_win32SoundBuffer.prop = InitializeSoundProperties();
 	g_win32SoundBuffer.isSoundPlaying = false;
 }
 
 static void
-AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
+Win32_AllocateSoundBuffer(HWND gameWindow, Win32_GameSoundBuffer* buffer)
 {
 		// Step 3 : Create the DirectSound object
 	LPDIRECTSOUND dsoundObj;
 	if(g_fnDirectSoundCreate && SUCCEEDED(g_fnDirectSoundCreate(NULL, &dsoundObj, 0))) { // DirectSoundCreate function populate the structure into the dsoundObj
 		WAVEFORMATEX waveFormat    = {0};
 		waveFormat.wFormatTag      = WAVE_FORMAT_PCM; // Uncompressed Pulse Code Modulation format
-		waveFormat.nChannels	   = g_win32SoundBuffer.noOfChannels;
-		waveFormat.nSamplesPerSec  = samplePerSec;
-		waveFormat.wBitsPerSample  = g_win32SoundBuffer.bitsPerSample;
+		waveFormat.nChannels	   = g_win32SoundBuffer.prop.noOfChannels;
+		waveFormat.nSamplesPerSec  = buffer->prop.samplesPerSecond;
+		waveFormat.wBitsPerSample  = g_win32SoundBuffer.prop.bitsPerSample;
 		waveFormat.nBlockAlign	   = waveFormat.nChannels * waveFormat.wBitsPerSample / 8; // As per documentation
 		waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign; // As per documentation
 		waveFormat.cbSize		   = 0;
@@ -150,7 +124,7 @@ AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
 			if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &dsPrimaryBuffer, 0))) {
 				// Set for format to play on the sound device
 				if(SUCCEEDED(dsPrimaryBuffer->SetFormat(&waveFormat))) {
-					OutputDebugString(TEXT("AllocateSoundBuffer : Primary Buffer set\n"));
+					//OutputDebugString(TEXT("AllocateSoundBuffer : Primary Buffer set\n"));
 				}
 			}
 		}
@@ -159,17 +133,17 @@ AllocateSoundBuffer(HWND gameWindow, uint32_t samplePerSec, uint32_t bufferSize)
 		DSBUFFERDESC dsBufferDescription  = {0};
 		dsBufferDescription.dwSize        = sizeof(DSBUFFERDESC);
 		dsBufferDescription.dwFlags       = 0;
-		dsBufferDescription.dwBufferBytes = bufferSize;
+		dsBufferDescription.dwBufferBytes = buffer->prop.samplesPerSecond * buffer->prop.bufferLengthInSec * buffer->prop.noOfChannels * buffer->prop.bitsPerSample / 8;
 		dsBufferDescription.lpwfxFormat   = &waveFormat;
 
 		if(SUCCEEDED(dsoundObj->CreateSoundBuffer(&dsBufferDescription, &g_win32SoundBuffer.soundBuffer, 0))) {
-			OutputDebugString(TEXT("AllocateSoundBuffer : Secondary Buffer set\n"));
+			//OutputDebugString(TEXT("AllocateSoundBuffer : Secondary Buffer set\n"));
 		}
 	}
 }
 
 static void
-LoadGameAssets()
+Win32_LoadGameAssets()
 {
 	HANDLE p = LoadImageA(NULL, "AP.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE | LR_CREATEDIBSECTION);
 	BITMAP file;
@@ -181,16 +155,16 @@ LoadGameAssets()
 		g_win32BackBuffer.src.width= file.bmWidth;
 		g_win32BackBuffer.src.height = file.bmHeight;
 
-		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_win32BackBuffer, file.bmWidth, file.bmHeight, false);
+		Win32_InitializeBitmapInfo();
+		Win32_AllocateGameBackBuffer(&g_win32BackBuffer, file.bmWidth, file.bmHeight, false);
 	} else {
-		InitializeBitmapInfo();
-		AllocateGameBackBuffer(&g_win32BackBuffer, 1920, 1080, true); // Default back buffer size
+		Win32_InitializeBitmapInfo();
+		Win32_AllocateGameBackBuffer(&g_win32BackBuffer, 1920, 1080, true); // Default back buffer size
 	}
 }
 
 static void
-LoadXInputLibrary()
+Win32_LoadXInputLibrary()
 {
 	// Load XInput library and get the addresses of the XInput functions
 	HMODULE xinputLib = LoadLibrary(TEXT("xinput1_4.dll"));
@@ -210,7 +184,7 @@ LoadXInputLibrary()
 }
 
 static void
-LoadDirectSoundLibrary(HWND gameWindow, uint32_t bufferSize, uint32_t samplePerSec)
+Win32_LoadDirectSoundLibrary(HWND gameWindow, Win32_GameSoundBuffer* buffer)
 {
 	// Step 1 : Load the dsound library
 	HMODULE dsoundLib = LoadLibrary(TEXT("dsound.dll")); // Load the DirectSound dll dynamically
@@ -218,19 +192,19 @@ LoadDirectSoundLibrary(HWND gameWindow, uint32_t bufferSize, uint32_t samplePerS
 		// Step 2 : Load the DirectSoundCreate proc address
 		g_fnDirectSoundCreate = (DynDirectSoundCreate *) GetProcAddress(dsoundLib, "DirectSoundCreate"); // Load the address of the DirectSoundCreate procedure
 
-		AllocateSoundBuffer(gameWindow, samplePerSec, bufferSize);
+		Win32_AllocateSoundBuffer(gameWindow, buffer);
 	}
 }
 
 static void
-LoadGameLibraries(HWND gameWindow)
+Win32_LoadGameLibraries(HWND gameWindow)
 {
-	LoadXInputLibrary();
-	LoadDirectSoundLibrary(gameWindow, g_win32SoundBuffer.bufferSizeInBytes, g_win32SoundBuffer.samplesPerSecond);
+	Win32_LoadXInputLibrary();
+	Win32_LoadDirectSoundLibrary(gameWindow, &g_win32SoundBuffer);
 }
 
 static void
-InitializeGameTime()
+Win32_InitializeGameTime()
 {
 	LARGE_INTEGER qpFrequency;
 	QueryPerformanceFrequency(&qpFrequency);
@@ -246,66 +220,33 @@ InitializeGameTime()
 static void
 InitializeGame(HWND gameWindow)
 {
-	InitializeSoundInfo();
-	LoadGameLibraries(gameWindow);
-	LoadGameAssets();
+	Win32_InitializeGameTime();
+	Win32_InitializeSoundInfo();
+	Win32_LoadGameLibraries(gameWindow);
+	Win32_LoadGameAssets();
 	SetAnimationState();
-	InitializeGameTime();
 	g_gameRunning = true;
 }
 
-static int16_t
-GetSoundSample(
-	Win32_GameSoundBuffer* buffer,
-	enum SoundWave waveType
-)
-{
-	uint32_t currSampleIndex = buffer->soundCursor;
-	uint32_t waveLength = buffer->samplesPerCycle;
-	uint32_t halfWaveLength = waveLength / 2;
-	int16_t maxAmplitude = buffer->volume;
-	int16_t sampleVal = 0;
-
-	switch(waveType) {
-		case SQUARE_WAVE:
-		{
-			sampleVal = (currSampleIndex / halfWaveLength) % 2 ? maxAmplitude : -maxAmplitude;
-		}
-		break;
-
-		case SINE_WAVE:
-		{
-			// Sine wave varies from -1 to 1 in the period 0 to 2 * PI. So split one wavelength into 2 * PI and take sample index worth of values from the cut
-			// (1/(WaveLength / 2 * PI)) * currSampleIndex => currSampleIndex * 2 * PI / WaveLength
-			float x = 2.0f * PI * ((float) currSampleIndex / (float) waveLength); // calculate sine period
-			float sine = sinf(x);
-			sampleVal = (int16_t)(sine * maxAmplitude);
-		}
-		break;
-	}
-
-	return sampleVal;
-}
-
 static void
-FillSoundBuffer(
+Win32_FillSoundBuffer(
 	Win32_GameSoundBuffer* buffer,
 	enum SoundWave waveType
 )
 {
-	buffer->samplesPerCycle = buffer->samplesPerSecond / buffer->toneFrequency; // samples/sec by cycles/sec => samples/cycle. Also mentioned as wave period in the lectures
-	uint32_t bytesPerSample = buffer->bitsPerSample / 8;
+	uint32_t bytesPerSample = buffer->prop.bitsPerSample / 8;
+	uint32_t bufferSizeInBytes = buffer->prop.samplesPerSecond * buffer->prop.bufferLengthInSec * buffer->prop.noOfChannels * buffer->prop.bitsPerSample / 8;
 
 	unsigned long cursorPlayPosition = 0;
 	unsigned long cursorWritePosition = 0;
 	if(SUCCEEDED(buffer->soundBuffer->GetCurrentPosition(&cursorPlayPosition, &cursorWritePosition))) {
-		uint32_t soundCursorByte = buffer->soundCursor * bytesPerSample * buffer->noOfChannels; // On each soundCursor index we're writing 4 bytes. 2 bytes for LEFT channel, 2 bytes for RIGHT channel
+		uint32_t soundCursorByte = buffer->prop.soundCursor * bytesPerSample * buffer->prop.noOfChannels; // On each soundCursor index we're writing 4 bytes. 2 bytes for LEFT channel, 2 bytes for RIGHT channel
 		uint32_t sizeOfBufferInBytesToLock = 0;
 		if(cursorPlayPosition < soundCursorByte) {
 			// If play position is before our running sample index, then bytes to lock is
 			// from current running sample index to the end of the buffer
 			// and start of the buffer to the play position
-			sizeOfBufferInBytesToLock = buffer->bufferSizeInBytes - soundCursorByte;
+			sizeOfBufferInBytesToLock = bufferSizeInBytes - soundCursorByte;
 			sizeOfBufferInBytesToLock += cursorPlayPosition;
 		} else {
 			// If play position is after our running sample index, then bytes to lock is
@@ -322,37 +263,16 @@ FillSoundBuffer(
 											   &region2, &region2SizeInBytes, 0))) {
 											   // dwFlags in Lock = DSBLOCK_FROMWRITECURSOR ignores dwOffset or DSBLOCK_ENTIREBUFFER ignores sizeOfBufferToLock. We don't want both
 
-			// Write into the sound buffer
-     		// Write region1 sound data
-			uint16_t* region1Mem = (uint16_t*) region1;
-			uint32_t noOfSamplesPerRegion1 = region1SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample. Each iteration we're writing two samples for each channel
-			for(uint32_t i = 0; i < noOfSamplesPerRegion1; ++i) {
-				// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
-				// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
-				int16_t sampleVal = GetSoundSample(buffer, waveType);
-				*region1Mem++ = sampleVal; // LEFT channel sound data
-				*region1Mem++ = sampleVal; // RIGHT channel sound data
-				buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
-			}
+			FillSoundBuffer(waveType, region1, region1SizeInBytes, &buffer->prop);
+			FillSoundBuffer(waveType, region2, region2SizeInBytes, &buffer->prop);
 
-			// Write region2 sound data
-			uint16_t* region2Mem = (uint16_t*) region2;
-			uint32_t noOfSamplesPerRegion2 = region2SizeInBytes / (bytesPerSample * buffer->noOfChannels); // bytes by bytes/sample => sample
-			for(uint32_t i = 0; i < noOfSamplesPerRegion2; ++i) {
-				// Fill half the sample with sampleMax and fill the other half with -sampleMax to simulate square wave
-				// soundCursor index / halfPeriod = sample * cycles/sample => cycle no and if it's even populate positive amplitude, else populate negative amplitude
-				int16_t sampleVal = GetSoundSample(buffer, waveType);
-				*region2Mem++ = sampleVal; // LEFT channel sound data
-				*region2Mem++ = sampleVal; // RIGHT channel sound data
-				buffer->soundCursor = (buffer->soundCursor + 1) % buffer->totalSamples;
-			}
 			buffer->soundBuffer->Unlock(region1, region1SizeInBytes, region2, region2SizeInBytes);
 		}
 	}
 }
 
 static void
-CopyBackBufferToWindow(
+Win32_CopyBackBufferToWindow(
 	Win32_GameBackBuffer* buffer,
 	HWND hWnd
 )
@@ -375,7 +295,7 @@ CopyBackBufferToWindow(
 }
 
 static void
-PlaySoundBuffer(
+Win32_PlaySoundBuffer(
 	Win32_GameSoundBuffer* buffer
 )
 {
@@ -393,10 +313,10 @@ RenderGame(
 )
 {
 	FillColorsInBackBuffer(&buffer->dest);
-	CopyBackBufferToWindow(buffer, hWnd);
+	Win32_CopyBackBufferToWindow(buffer, hWnd);
 
-	FillSoundBuffer(soundBuffer, SINE_WAVE);
-	PlaySoundBuffer(soundBuffer);
+	Win32_FillSoundBuffer(soundBuffer, SINE_WAVE);
+	Win32_PlaySoundBuffer(soundBuffer);
 }
 
 static void
@@ -411,8 +331,8 @@ Win32_HandleXboxControllerInput()
 			if(controllerState.dwPacketNumber != g_gameState.handledXInputPacket) {
 				bool buttonA = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_A;
 				bool buttonB = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_B;
-				bool buttonX = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X;
-				bool buttonY = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y;
+				//bool buttonX = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_X;
+				//bool buttonY = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_Y;
 
 				bool dpadUp	   = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_UP;
 				bool dpadDown  = controllerState.Gamepad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN;
@@ -437,11 +357,6 @@ Win32_HandleXboxControllerInput()
 
 				if(dpadDown || dpadRight) {
 					ChangeAnimationIncrementValues(-1); // Decrement the animation value by 1
-				}
-
-				if(buttonX || buttonY) {
-					g_win32SoundBuffer.toneFrequency = 1024;
-					g_win32SoundBuffer.samplesPerCycle = g_win32SoundBuffer.samplesPerSecond / g_win32SoundBuffer.toneFrequency;
 				}
 
 				g_gameState.handledXInputPacket = controllerState.dwPacketNumber; // Update the handled packet number to avoid processing the same input multiple times
@@ -556,7 +471,7 @@ CalculateGameStats()
 }
 
 static void 
-UpdateGameTimeInfo()
+Win32_UpdateGameTimeInfo()
 {
 	LARGE_INTEGER currentCounter;
 	QueryPerformanceCounter(&currentCounter);
@@ -573,7 +488,7 @@ UpdateGameTimeInfo()
 }
 
 static void
-GetUserInput()
+Win32_GetUserInput()
 {
 	Win32_HandleXboxControllerInput();
 }
@@ -655,9 +570,9 @@ Win32_MessageLoop(
 			DispatchMessage(&msg);
 		}
 
-		GetUserInput();
+		Win32_GetUserInput();
 		RenderGame(&g_win32BackBuffer, &g_win32SoundBuffer, window);
-		UpdateGameTimeInfo();
+		Win32_UpdateGameTimeInfo();
 	}
 	ReleaseDC(window, g_win32DC);
 }
